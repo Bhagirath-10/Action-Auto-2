@@ -2,5 +2,5 @@
 
 Test APKs (QA builds, not releases).
 
-- 4bTech-Space-1.1.12-qa7.apk
+- 4bTech-Space-1.1.12-qa8.apk
 - 4bTech-Game-2.1.13-qa47.apk
