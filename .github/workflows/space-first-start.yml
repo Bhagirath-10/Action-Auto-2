@@ -47,6 +47,13 @@ jobs:
               echo "Using $n" | tee -a "$GITHUB_STEP_SUMMARY"; echo "name=$n" >> "$GITHUB_OUTPUT"; exit 0
             fi
             echo "$n: set, but it cannot read the private repository"
+            # Why (nothing of the token itself is printed): its kind, whom it belongs to,
+            # and what GitHub answers for the repository.
+            case "$v" in github_pat_*) KIND="fine-grained";; ghp_*) KIND="classic";; *) KIND="unknown kind (not a personal access token?)";; esac
+            U=$(curl -sS -o "$RUNNER_TEMP/u.json" -D "$RUNNER_TEMP/u.h" -w '%{http_code}' -H "Authorization: Bearer $v" https://api.github.com/user || true)
+            R=$(curl -sS -o "$RUNNER_TEMP/r.json" -w '%{http_code}' -H "Authorization: Bearer $v" "https://api.github.com/repos/$PRIVATE_REPO" || true)
+            echo "  token: $KIND, length ${#v}; /user answers $U (login: $(jq -r '.login // "-"' "$RUNNER_TEMP/u.json" 2>/dev/null)); the repository answers $R ($(jq -r '.message // "ok"' "$RUNNER_TEMP/r.json" 2>/dev/null | cut -c1-120))"
+            [ "$KIND" != classic ] || echo "  scopes of the classic token: $(grep -i '^x-oauth-scopes:' "$RUNNER_TEMP/u.h" | cut -d' ' -f2- | tr -d '\r')"
           done
           echo "::error::No token secret can read the private repository. Add the secret MULTISPACE_REPO_TOKEN to this repository (fine-grained token, Contents read and write on the private repository only)."; exit 1
 
