@@ -1,13 +1,14 @@
 name: Nexora AI - build and end-to-end test on an emulator
 
-# Builds the Nexora AI app (private repository 4BornGithub/Nexora_AI) and runs it on an Android
-# emulator against the backend (private repository Bhagirath-10/Game-Auto-2, folder backend,
-# started on this machine). Nothing of the test is public: screenshots and logs go to branch
-# "results" of the app's private repository, and this log shows only PASS / FAIL lines.
+# Builds the Nexora AI app (private repository) and runs it on an Android emulator against
+# the backend, which is started on this machine from a test-only branch of the same private
+# repository. Nothing of the test is public: screenshots, logs and the full results go to
+# branch "results" of the private repository, and this log shows only PASS / FAIL lines.
 # Runs when nexora-e2e.txt changes; its first line is
-#   "<app branch> <backend branch> <what: access | build | e2e>".
-# Secret needed: one token that can read both private repositories (NEXORA_REPO_TOKEN,
-# or PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN if they can).
+#   "<app branch> <backend branch> <what> <emulator images...>"
+# for example "v1-build ci-backend e2e google_apis".
+# Secret needed: one token that can read and write the private repository (NEXORA_REPO_TOKEN,
+# or PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN if one of them can).
 
 on:
   push:
@@ -19,51 +20,140 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: nexora-e2e
+  cancel-in-progress: true
+
 env:
   APP_REPO: 4BornGithub/Nexora_AI
-  BACKEND_REPO: Bhagirath-10/Game-Auto-2
 
 jobs:
-  access:
-    name: access
+  plan:
+    name: plan
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      app_token: ${{ steps.pick.outputs.app }}
-      backend_token: ${{ steps.pick.outputs.backend }}
+      token: ${{ steps.pick.outputs.name }}
       app_ref: ${{ steps.what.outputs.app_ref }}
       backend_ref: ${{ steps.what.outputs.backend_ref }}
       what: ${{ steps.what.outputs.what }}
+      images: ${{ steps.what.outputs.images }}
     steps:
       - uses: actions/checkout@v4
       - name: What to test
         id: what
         run: |
-          read -r APP BACKEND WHAT < nexora-e2e.txt
-          echo "app_ref=$APP" >> "$GITHUB_OUTPUT"; echo "backend_ref=$BACKEND" >> "$GITHUB_OUTPUT"; echo "what=${WHAT:-access}" >> "$GITHUB_OUTPUT"
+          read -r APP BACKEND WHAT IMAGES < nexora-e2e.txt
+          ok() { echo "$1" | grep -Eq '^[A-Za-z0-9._/-]{1,80}$' || { echo "::error::nexora-e2e.txt: \"$2\" is not valid"; exit 1; }; }
+          ok "$APP" "app branch"; ok "$BACKEND" "backend branch"; ok "${WHAT:-e2e}" "what"
+          echo "app_ref=$APP" >> "$GITHUB_OUTPUT"; echo "backend_ref=$BACKEND" >> "$GITHUB_OUTPUT"; echo "what=${WHAT:-e2e}" >> "$GITHUB_OUTPUT"
+          echo "images=$(echo "${IMAGES:-google_apis}" | tr -s ' ' '\n' | grep -E '^(default|google_apis|google_apis_playstore|aosp_atd|google_atd)$' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
       # Only the names of the secrets are printed, never a token.
-      - name: Pick a token for each private repository
+      - name: Pick a token for the private repository
         id: pick
         env:
           NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
         run: |
-          pick() { # $1 = output name, $2 = repository
-            for n in NEXORA_REPO_TOKEN PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN; do
-              v="${!n}"
-              if [ -z "$v" ]; then echo "$2: $n is not set"; continue; fi
-              if git ls-remote "https://x-access-token:$v@github.com/$2.git" >/dev/null 2>&1; then
-                echo "$2: using $n" | tee -a "$GITHUB_STEP_SUMMARY"; echo "$1=$n" >> "$GITHUB_OUTPUT"; return 0
-              fi
-              case "$v" in github_pat_*) KIND="fine-grained";; ghp_*) KIND="classic";; *) KIND="unknown kind";; esac
-              R=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $v" "https://api.github.com/repos/$2" || true)
-              echo "$2: $n is set ($KIND) but cannot read it (GitHub answers $R)"
-            done
-            echo "$2: NO TOKEN CAN READ IT" | tee -a "$GITHUB_STEP_SUMMARY"; return 1
-          }
-          A=0; pick app "$APP_REPO" || A=1
-          B=0; pick backend "$BACKEND_REPO" || B=1
-          if [ $A = 1 ] || [ $B = 1 ]; then
-            echo "::error::A token secret is missing. Add NEXORA_REPO_TOKEN to this repository: a fine-grained token with Contents read and write on $APP_REPO and Contents read on $BACKEND_REPO."; exit 1
-          fi
+          for n in NEXORA_REPO_TOKEN PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN; do
+            v="${!n}"
+            if [ -z "$v" ]; then echo "$n is not set"; continue; fi
+            if git ls-remote "https://x-access-token:$v@github.com/$APP_REPO.git" HEAD >/dev/null 2>&1; then
+              echo "using $n" | tee -a "$GITHUB_STEP_SUMMARY"; echo "name=$n" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "$n is set but cannot read the private repository"
+          done
+          echo "::error::No token secret can read the private repository. Add the secret NEXORA_REPO_TOKEN to this repository (fine-grained token, Contents read and write on the private repository only)."; exit 1
+
+  test:
+    name: ${{ needs.plan.outputs.what }} on ${{ matrix.image }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJson(needs.plan.outputs.images) }}
+    env:
+      WHAT: ${{ needs.plan.outputs.what }}
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - name: Checkout the app (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ needs.plan.outputs.app_ref }}
+          token: ${{ secrets[needs.plan.outputs.token] }}
+          path: app-src
+          persist-credentials: false
+      - name: Checkout the backend copy (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ needs.plan.outputs.backend_ref }}
+          token: ${{ secrets[needs.plan.outputs.token] }}
+          path: backend-src
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build
+        run: mkdir -p "$RUNNER_TEMP/out" && bash app-src/tools/ci/build.sh "$RUNNER_TEMP/out"
+
+      # The backend runs only on this machine, with secrets made up for this run.
+      - name: Start the backend on this machine
+        working-directory: backend-src/backend
+        run: |
+          npm ci --omit=dev --no-audit --no-fund > "$RUNNER_TEMP/out/backend_install.txt" 2>&1 || { echo "::error::The backend did not install"; exit 1; }
+          ADMIN_API_SECRET="$(openssl rand -hex 32)"; echo "::add-mask::$ADMIN_API_SECRET"; echo "ADMIN_API_SECRET=$ADMIN_API_SECRET" >> "$GITHUB_ENV"
+          export ADMIN_API_SECRET JWT_SECRET="$(openssl rand -hex 32)" ADMIN_API_WRITES=1
+          export PORT=8080 DB_PATH="$RUNNER_TEMP/nexora-test.db" LOG_LEVEL=info
+          export NX_OTP_MODE=echo NX_AI_MODE=handoff NX_OTP_RESEND_SEC=0 NX_OTP_PER_HOUR=1000 RATE_AUTH_PER_MIN=1000 RATE_NX_WRITE_PER_MIN=1000
+          nohup node src/server.js > "$RUNNER_TEMP/out/backend_log.txt" 2>&1 &
+          for i in $(seq 1 30); do curl -s -o /dev/null "http://127.0.0.1:8080/api/v1/nx/profiles" && { echo "backend is up"; exit 0; }; sleep 1; done
+          echo "::error::The backend did not start"; exit 1
+
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: ${{ matrix.image }}
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          disk-size: 6000M
+          disable-animations: true
+          emulator-boot-timeout: 900
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash app-src/tools/ci/device.sh "$RUNNER_TEMP/out"
+
+      - name: Result (PASS / FAIL lines only)
+        if: always()
+        run: |
+          { echo "### $WHAT on $IMAGE"; echo '```'; cat "$RUNNER_TEMP/out/public.txt" 2>/dev/null || echo "no result"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Save results to the private repository (branch "results")
+        if: always()
+        env:
+          TOKEN: ${{ secrets[needs.plan.outputs.token] }}
+          REPO: ${{ env.APP_REPO }}
+        run: set -o pipefail; bash app-src/tools/ci/save-results.sh "$RUNNER_TEMP/out" "$WHAT-$IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Fail if a test failed
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/out/public.txt" ] || { echo "no result"; exit 1; }
+          ! grep -q '^FAIL' "$RUNNER_TEMP/out/public.txt"
