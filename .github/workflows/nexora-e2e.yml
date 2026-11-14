@@ -40,6 +40,8 @@ jobs:
       images: ${{ steps.what.outputs.images }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: What to test
         id: what
         run: |
@@ -56,6 +58,7 @@ jobs:
           PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
         run: |
+          cd "$RUNNER_TEMP"   # not inside a checkout: its git settings must not be used here
           for n in NEXORA_REPO_TOKEN PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN; do
             v="${!n}"
             if [ -z "$v" ]; then echo "$n is not set"; continue; fi
@@ -63,14 +66,9 @@ jobs:
               echo "using $n" | tee -a "$GITHUB_STEP_SUMMARY"; echo "name=$n" >> "$GITHUB_OUTPUT"; exit 0
             fi
             echo "$n is set but git cannot read the private repository"
-            # Why (no token is printed): what git says, the token's kind and scopes, and what the API allows.
-            git ls-remote "https://x-access-token:$v@github.com/$APP_REPO.git" HEAD 2>&1 >/dev/null | sed -E 's#https?://[^ ]*#<url>#g' | tail -3 | sed 's/^/  git: /'
-            case "$v" in github_pat_*) KIND="fine-grained";; ghp_*) KIND="classic";; *) KIND="unknown kind";; esac
-            R=$(curl -sS -o "$RUNNER_TEMP/r.json" -D "$RUNNER_TEMP/r.h" -w '%{http_code}' -H "Authorization: Bearer $v" "https://api.github.com/repos/$APP_REPO" || true)
-            echo "  token kind: $KIND; API answers $R; scopes: $(grep -i '^x-oauth-scopes:' "$RUNNER_TEMP/r.h" | cut -d' ' -f2- | tr -d '\r')"
-            echo "  API says: private=$(jq -r '.private' "$RUNNER_TEMP/r.json" 2>/dev/null), permissions=$(jq -c '.permissions' "$RUNNER_TEMP/r.json" 2>/dev/null)"
-            R2=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $v" "https://api.github.com/repos/$APP_REPO/contents/README.md" || true)
-            echo "  API read of a file answers $R2"
+            git ls-remote "https://x-access-token:$v@github.com/$APP_REPO.git" HEAD 2>&1 >/dev/null | sed -E 's#https?://[^ ]*#<url>#g' | tail -2 | sed 's/^/  git: /'
+            R=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $v" "https://api.github.com/repos/$APP_REPO" || true)
+            echo "  the API answers $R"
           done
           echo "::error::No token secret can read the private repository. Add the secret NEXORA_REPO_TOKEN to this repository (fine-grained token, Contents read and write on the private repository only)."; exit 1
 
