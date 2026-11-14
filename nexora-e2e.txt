@@ -1,1 +1,1 @@
-ci-probe ci-backend probe default
+ci-probe ci-backend probe google_apis
