@@ -1,0 +1,160 @@
+name: 4bTech Space - an app's first and second start in copies (Android on ARM)
+
+# Builds the debug app of a branch of the private 4bTech Space repository and runs its
+# scripts/ci/first-start.sh on real ARM Android (Redroid in Docker on GitHub's ARM runner,
+# no x86 emulator), once per Android version: a copy's first start is watched for some
+# minutes, then it is closed and opened again.
+# Nothing of the test is public: the files handed from the build to the test are encrypted,
+# screenshots and logs go to branch "results" of the private repository, and this log shows
+# only PASS / FAIL lines. Runs when space-first-start.txt changes; its first line is
+# "<private branch> <android version> [<android version> ...]".
+# Secret needed: MULTISPACE_REPO_TOKEN (or PRIVATE_REPO_TOKEN): a fine-grained token with
+# Contents read and write on the private repository only.
+
+on:
+  push:
+    branches: [ci]
+    paths:
+      - space-first-start.txt
+      - .github/workflows/space-first-start.yml
+
+permissions:
+  contents: read
+
+env:
+  PRIVATE_REPO: 4BornGithub/4B-Multi-Space
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      token: ${{ steps.token.outputs.name }}
+      versions: ${{ steps.what.outputs.versions }}
+    steps:
+      # Only the names of the secrets are printed.
+      - name: Pick a token for the private repository
+        id: token
+        env:
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          for n in MULTISPACE_REPO_TOKEN PRIVATE_REPO_TOKEN; do
+            v="${!n}"
+            if [ -z "$v" ]; then echo "$n: not set"; continue; fi
+            if git ls-remote "https://x-access-token:$v@github.com/$PRIVATE_REPO.git" HEAD >/dev/null 2>&1; then
+              echo "Using $n" | tee -a "$GITHUB_STEP_SUMMARY"; echo "name=$n" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "$n: set, but it cannot read the private repository"
+          done
+          echo "::error::No token secret can read the private repository. Add the secret MULTISPACE_REPO_TOKEN to this repository (fine-grained token, Contents read and write on the private repository only)."; exit 1
+
+      - uses: actions/checkout@v4
+      - name: What to test
+        id: what
+        run: |
+          read -r REF VERSIONS < space-first-start.txt
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "versions=$(echo "$VERSIONS" | tr -s ' ' '\n' | grep -E '^[0-9.]+$' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the private repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          ref: ${{ steps.what.outputs.ref }}
+          token: ${{ secrets[steps.token.outputs.name] }}
+          path: private
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+
+      - name: Build (debug)
+        working-directory: private
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.13846066" >/dev/null
+          gradle --no-daemon --console=plain :app:assembleDebug >"$RUNNER_TEMP/build_log.txt" 2>&1 || { grep -E "^e: |error:|What went wrong" -A3 "$RUNNER_TEMP/build_log.txt" | head -40; exit 1; }
+
+      - name: Files for the test (encrypted)
+        working-directory: private
+        env:
+          TOKEN: ${{ secrets[steps.token.outputs.name] }}
+        run: |
+          set -e
+          . testing/first-start/app.conf
+          X="$RUNNER_TEMP/x"; mkdir -p "$X"
+          cp app/build/outputs/apk/debug/*universal*.apk "$X/app.apk"
+          cp scripts/ci/first-start.sh scripts/ci/save-results.sh "$X/"
+          git fetch -q --depth 1 origin test-apps
+          git show "FETCH_HEAD:$APK" > "$X/test.apk"
+          printf '%s\n' "${SEED_NAME:-}" > "$X/seed-name.txt"
+          if [ -n "${SEED_FILE:-}" ]; then cp "$SEED_FILE" "$X/seed.xml"; fi
+          mkdir -p "$RUNNER_TEMP/enc"
+          tar -C "$X" -cf - . | openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:TOKEN -out "$RUNNER_TEMP/enc/files.bin"
+          echo "files: $(du -h "$RUNNER_TEMP/enc/files.bin" | cut -f1)"
+
+      # Encrypted with the token; readable only by the next job of this run. Deleted after 1 day.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: first-start-files
+          path: ${{ runner.temp }}/enc
+          retention-days: 1
+
+  test:
+    name: Android ${{ matrix.android }}
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        android: ${{ fromJson(needs.build.outputs.versions) }}
+    env:
+      ANDROID_SERIAL: localhost:6000
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: first-start-files
+          path: enc
+      - name: Open the files
+        env:
+          TOKEN: ${{ secrets[needs.build.outputs.token] }}
+        run: mkdir -p x && openssl enc -d -aes-256-cbc -pbkdf2 -pass env:TOKEN -in enc/files.bin | tar -C x -xf - && rm -rf enc
+      - name: Start Android (Redroid, arm64)
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          sudo apt-get update -qq >/dev/null
+          sudo apt-get install -y -qq adb "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || sudo apt-get install -y -qq adb >/dev/null
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+          sudo modprobe ashmem_linux 2>/dev/null || true
+          echo "runner: $(nproc) CPUs, $(free -g | awk '/Mem/{print $2}') GB"
+          IMG="redroid/redroid:${{ matrix.android }}-latest"
+          docker pull -q "$IMG" >/dev/null
+          docker run -d --name android --privileged --memory=6g -p 6000:5555 "$IMG" \
+            androidboot.redroid_gpu_mode=guest androidboot.use_memfd=true androidboot.redroid_width=720 androidboot.redroid_height=1520 androidboot.redroid_dpi=280 >/dev/null
+          for i in $(seq 1 84); do adb connect localhost:6000 >/dev/null 2>&1; [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break; sleep 5; done
+          [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 ] || { docker logs android 2>&1 | tail -100 > "$RUNNER_TEMP/out/boot_failure.txt"; echo "::error::Android did not boot"; exit 1; }
+          echo "Android $(adb shell getprop ro.build.version.release | tr -d '\r') booted"
+      - name: First and second start of the app in copies
+        run: |
+          SEED=$(cat x/seed-name.txt)
+          if [ -n "$SEED" ] && [ -f x/seed.xml ]; then ARGS="$SEED x/seed.xml"; else ARGS=""; fi
+          bash x/first-start.sh x/app.apk x/test.apk "$RUNNER_TEMP/out/first-start" $ARGS > "$RUNNER_TEMP/out/console.txt" 2>&1; RC=$?
+          { echo "### Android ${{ matrix.android }}"; echo '```'; cat "$RUNNER_TEMP/out/first-start/public.txt" 2>/dev/null || echo "no result (see the private results)"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          docker logs android > "$RUNNER_TEMP/out/redroid_log.txt" 2>&1 || true
+          docker stop android >/dev/null 2>&1 || true
+          echo "RC=$RC" >> "$GITHUB_ENV"
+      - name: Save results to the private repository (branch "results")
+        if: always()
+        env:
+          TOKEN: ${{ secrets[needs.build.outputs.token] }}
+        run: set -o pipefail; bash x/save-results.sh "$RUNNER_TEMP/out" "first-start-android${{ matrix.android }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Fail if the app failed in a copy
+        if: env.RC != '0'
+        run: exit 1
