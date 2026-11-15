@@ -71,6 +71,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.14.3"
+      # The test copy has no signing key (it stays only in the app's own repository). The build
+      # reads one when it starts, so a throw-away test key is made here; debug builds use the debug key.
+      - name: A throw-away key for the test build
+        working-directory: app-src/android-app/app
+        run: |
+          [ -f release.keystore ] || keytool -genkeypair -keystore release.keystore -storetype PKCS12 -storepass gameauto -keypass gameauto \
+            -alias gameauto -keyalg RSA -keysize 2048 -validity 30 -dname "CN=test" >/dev/null 2>&1
       - name: Unit tests and the QA builds (full and shell release)
         working-directory: app-src/android-app
         env:
