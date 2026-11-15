@@ -121,10 +121,13 @@ jobs:
         run: |
           docker build --progress=plain -t nexora-backend backend-src/backend > "$RUNNER_TEMP/out/docker_build.txt" 2>&1 || { echo "::error::The backend image did not build"; echo "FAIL backend image" >> "$RUNNER_TEMP/out/public.txt"; exit 1; }
           ADMIN_API_SECRET="$(openssl rand -hex 32)"; echo "::add-mask::$ADMIN_API_SECRET"; echo "ADMIN_API_SECRET=$ADMIN_API_SECRET" >> "$GITHUB_ENV"
+          # In production mode the backend gives test codes only to these numbers (random for this run).
+          NX_TEST_NUMBERS="$(for i in $(seq 1 40); do printf '9%09d,' "$(( (RANDOM * 32768 + RANDOM) % 1000000000 ))"; done | sed 's/,$//')"
+          echo "NX_TEST_NUMBERS=$NX_TEST_NUMBERS" >> "$GITHUB_ENV"
           docker run -d --name nexora-backend -p 127.0.0.1:8080:8080 \
             -e JWT_SECRET="$(openssl rand -hex 32)" -e ADMIN_API_SECRET="$ADMIN_API_SECRET" -e ADMIN_API_WRITES=1 \
-            -e NEXORA_ENABLED=1 -e NX_OTP_MODE=echo -e NX_OTP_TEST_OK=1 -e NX_AI_MODE=handoff \
-            -e NX_OTP_RESEND_SEC=0 -e NX_OTP_PER_HOUR=1000 -e RATE_AUTH_PER_MIN=1000 -e RATE_NX_WRITE_PER_MIN=1000 -e RATE_READ_PER_MIN=100000 \
+            -e NEXORA_ENABLED=1 -e NX_OTP_MODE=echo -e NX_OTP_TEST_OK=1 -e NX_OTP_TEST_NUMBERS="$NX_TEST_NUMBERS" -e NX_AI_MODE=handoff \
+            -e NX_OTP_RESEND_SEC=0 -e NX_OTP_PER_HOUR=1000 -e NX_OTP_PER_MOBILE_DAY=1000 -e NX_OTP_PER_IP_DAY=100000 -e RATE_AUTH_PER_MIN=1000 -e RATE_NX_WRITE_PER_MIN=1000 -e RATE_READ_PER_MIN=100000 \
             -e LOG_LEVEL=info nexora-backend > /dev/null
           for i in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:8080/api/v1/nx/profiles" && { echo "backend is up"; exit 0; }; sleep 1; done
           echo "::error::The backend did not start"; exit 1
