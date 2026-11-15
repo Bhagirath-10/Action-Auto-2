@@ -1,0 +1,76 @@
+name: Game app - Nexora redesign test APK only
+
+# Builds only the test APK of the redesigned game app (debug, for phones) from the private
+# test copy (branch ci-gameapp of 4BornGithub/Nexora_AI) and puts it on a PRE-RELEASE of that
+# private repository. Never the live update channel. Runs when game-app-apk.txt changes.
+
+on:
+  push:
+    branches: [ci]
+    paths:
+      - game-app-apk.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: game-app-apk
+  cancel-in-progress: true
+
+env:
+  APP_REPO: 4BornGithub/Nexora_AI
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Which branch
+        id: what
+        run: |
+          read -r APP REST < game-app-apk.txt
+          echo "$APP" | grep -Eq '^[A-Za-z0-9._/-]{1,80}$' || { echo "::error::not a valid branch"; exit 1; }
+          echo "app_ref=$APP" >> "$GITHUB_OUTPUT"
+      - name: Checkout the app (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ steps.what.outputs.app_ref }}
+          token: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          path: app-src
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - name: A throw-away key for the build (the real key is not in the test copy)
+        working-directory: app-src/android-app/app
+        run: |
+          [ -f release.keystore ] || keytool -genkeypair -keystore release.keystore -storetype PKCS12 -storepass gameauto -keypass gameauto \
+            -alias gameauto -keyalg RSA -keysize 2048 -validity 30 -dname "CN=test" >/dev/null 2>&1
+      - name: Build the phone APK (debug)
+        working-directory: app-src/android-app
+        env:
+          VERSION_CODE: "20113"
+          VERSION_NAME: "2.1.13-nexora-test"
+          BACKEND_URL: https://4brummyhome.synoventum.us.cc
+        run: |
+          export LOGIC_FLOOR="$(grep -oE '^[0-9]+' ../logic-floor.txt 2>/dev/null | head -1)"; export LOGIC_FLOOR="${LOGIC_FLOOR:-0}"
+          gradle --no-daemon --console=plain assembleFullDebug > "$RUNNER_TEMP/build_log.txt" 2>&1 || { tail -5 "$RUNNER_TEMP/build_log.txt" | grep -v -i token; echo "::error::build failed"; exit 1; }
+          cp app/build/outputs/apk/full/debug/app-full-debug.apk "$RUNNER_TEMP/Nexora-AI-redesign-TEST.apk"
+          echo "PASS phone APK built"
+      - name: Pre-release of the private repository (not latest)
+        env:
+          GH_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+        run: |
+          TAG="game-redesign-test-$(date -u +%Y%m%d-%H%M)"
+          SHA="$(git -C app-src rev-parse HEAD)"
+          gh release create "$TAG" "$RUNNER_TEMP/Nexora-AI-redesign-TEST.apk" --repo "$APP_REPO" --target "$SHA" --prerelease --latest=false \
+            --title "$TAG" --notes "Debug test build of the Nexora AI redesign of the game app. Signed with a test key: uninstall the old app first. Not a release: phones never get it." > /dev/null
+          echo "PASS test APK: pre-release $TAG of the private repository"
