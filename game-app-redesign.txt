@@ -1,1 +1,1 @@
-ci-gameapp shots apk run2
+ci-gameapp shots run3
