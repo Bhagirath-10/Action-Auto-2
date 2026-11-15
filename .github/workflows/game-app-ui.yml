@@ -1,0 +1,62 @@
+name: Game app - redesign check (tests, debug build, screenshots)
+
+# Builds a branch of the PRIVATE game app repository (Bhagirath-10/game-auto-2, folder
+# android-app) as a TEST build: unit tests, a debug APK, then opens its pages on an emulator and
+# takes screenshots. Nothing is played, nothing is released to users. Screenshots, logs and the
+# debug APK go only to the private repository (branch "nexora-redesign-results"); this public log
+# shows PASS / FAIL lines only. Runs when game-app-ui.txt changes; its first line is
+# "<app branch>".
+
+on:
+  push:
+    branches: [ci]
+    paths:
+      - game-app-ui.txt
+      - .github/workflows/game-app-ui.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: game-app-ui
+  cancel-in-progress: true
+
+env:
+  APP_REPO: Bhagirath-10/game-auto-2
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      token: ${{ steps.pick.outputs.name }}
+      app_ref: ${{ steps.what.outputs.app_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: What to build
+        id: what
+        run: |
+          read -r APP REST < game-app-ui.txt
+          echo "$APP" | grep -Eq '^[A-Za-z0-9._/-]{1,80}$' || { echo "::error::game-app-ui.txt: the branch is not valid"; exit 1; }
+          echo "app_ref=$APP" >> "$GITHUB_OUTPUT"
+      # Only the names of the secrets are printed, never a token.
+      - name: Pick a token for the private repository
+        id: pick
+        env:
+          GAME_REPO_TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
+          NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+        run: |
+          cd "$RUNNER_TEMP"
+          for n in GAME_REPO_TOKEN NEXORA_REPO_TOKEN PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN; do
+            v="${!n}"
+            if [ -z "$v" ]; then echo "$n is not set"; continue; fi
+            if git ls-remote "https://x-access-token:$v@github.com/$APP_REPO.git" HEAD >/dev/null 2>&1; then
+              echo "using $n" | tee -a "$GITHUB_STEP_SUMMARY"; echo "name=$n" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "$n is set but cannot read the private repository"
+          done
+          echo "::error::No token secret can read the private repository."; exit 1
