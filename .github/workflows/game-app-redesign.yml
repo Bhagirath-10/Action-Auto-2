@@ -28,7 +28,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  APP_REPO: Bhagirath-10/Game-Auto-2
+  # A test-only copy of android-app/ and scripts/ (no signing key) on branch ci-gameapp of this
+  # private repository, which MULTISPACE_REPO_TOKEN can read and write.
+  APP_REPO: 4BornGithub/Nexora_AI
 
 jobs:
   check:
@@ -48,7 +50,7 @@ jobs:
           echo "apk=$(echo " $REST " | grep -q ' apk ' && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
       - name: The token can read the private repository
         env:
-          GAME_REPO_TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
+          GAME_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
         run: |
           cd "$RUNNER_TEMP"
           [ -n "$GAME_REPO_TOKEN" ] || { echo "::error::Add the secret GAME_REPO_TOKEN (Contents read and write on $APP_REPO only)."; exit 1; }
@@ -59,7 +61,7 @@ jobs:
         with:
           repository: ${{ env.APP_REPO }}
           ref: ${{ steps.what.outputs.app_ref }}
-          token: ${{ secrets.GAME_REPO_TOKEN }}
+          token: ${{ secrets.MULTISPACE_REPO_TOKEN }}
           path: app-src
           persist-credentials: false
       - uses: actions/setup-java@v4
@@ -78,11 +80,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/out"
           export LOGIC_FLOOR="$(grep -oE '^[0-9]+' ../logic-floor.txt 2>/dev/null | head -1 || echo 0)"
-          if gradle --no-daemon --console=plain testFullReleaseUnitTest assembleFullRelease assembleShellRelease >"$RUNNER_TEMP/out/build_log.txt" 2>&1; then
-            echo "PASS unit tests (full) and release builds (full, shell)" | tee -a "$RUNNER_TEMP/out/public.txt"
-            cp app/build/outputs/apk/full/release/app-full-release.apk "$RUNNER_TEMP/nexora-full-release.apk"
+          if gradle --no-daemon --console=plain testFullDebugUnitTest assembleFullDebug >"$RUNNER_TEMP/out/build_log.txt" 2>&1; then
+            echo "PASS unit tests and the phone build (debug, arm)" | tee -a "$RUNNER_TEMP/out/public.txt"
+            cp app/build/outputs/apk/full/debug/app-full-debug.apk "$RUNNER_TEMP/nexora-full-release.apk"
           else
-            echo "FAIL unit tests or release builds (details in the private results)" | tee -a "$RUNNER_TEMP/out/public.txt"
+            echo "FAIL unit tests or the phone build (details in the private results)" | tee -a "$RUNNER_TEMP/out/public.txt"
             echo "build_failed=1" >> "$GITHUB_ENV"
           fi
       - name: Debug build for the emulator (no backend)
@@ -91,7 +93,7 @@ jobs:
         env:
           APP_ABIS: x86_64
         run: |
-          if gradle --no-daemon --console=plain assembleFullDebug >"$RUNNER_TEMP/out/debug_build_log.txt" 2>&1; then
+          if gradle --no-daemon --console=plain clean assembleFullDebug >"$RUNNER_TEMP/out/debug_build_log.txt" 2>&1; then
             cp app/build/outputs/apk/full/debug/app-full-debug.apk "$RUNNER_TEMP/nexora-debug.apk"
             echo "PASS debug build" | tee -a "$RUNNER_TEMP/out/public.txt"
           else
@@ -121,7 +123,7 @@ jobs:
       - name: Test APK to a pre-release of the private repository (not latest)
         if: steps.what.outputs.apk == '1' && env.build_failed != '1'
         env:
-          GH_TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
         run: |
           TAG="nexora-redesign-test-$(TZ=Asia/Kolkata date +%Y%m%d-%H%M)"
           APK="$RUNNER_TEMP/Nexora-AI-redesign-TEST-2.1.13.apk"
@@ -129,12 +131,12 @@ jobs:
           SHA="$(git -C app-src rev-parse HEAD)"
           gh release create "$TAG" "$APK" --repo "$APP_REPO" --target "$SHA" --prerelease --latest=false \
             --title "Nexora AI redesign: TEST APK (not for users)" \
-            --notes "Test build of branch ${{ steps.what.outputs.app_ref }} ($SHA). Not a release: phones never get it. Install on a test phone only." > /dev/null
+            --notes "Debug test build (signed with a test key: uninstall the old app first) of branch ${{ steps.what.outputs.app_ref }} ($SHA). Not a release: phones never get it. Install on a test phone only." > /dev/null
           echo "PASS test APK: pre-release $TAG of the private repository" | tee -a "$RUNNER_TEMP/out/public.txt"
       - name: Results to branch nexora-redesign-results (private repository)
         if: always()
         env:
-          TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
+          TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
         run: |
           [ -n "$TOKEN" ] || exit 0
           D="$(TZ=Asia/Kolkata date +%Y%m%d-%H%M%S)-run${GITHUB_RUN_ID}"
