@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: nexora-e2e
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   APP_REPO: 4BornGithub/Nexora_AI
@@ -118,6 +118,7 @@ jobs:
       # The backend runs only on this machine, in its real container (production mode), with
       # secrets made up for this run. Test sign-in codes are shown in the app (NX_OTP_MODE=echo).
       - name: Start the backend on this machine (its container, production mode)
+        if: env.WHAT != 'apk'
         run: |
           docker build --progress=plain -t nexora-backend backend-src/backend > "$RUNNER_TEMP/out/docker_build.txt" 2>&1 || { echo "::error::The backend image did not build"; echo "FAIL backend image" >> "$RUNNER_TEMP/out/public.txt"; exit 1; }
           ADMIN_API_SECRET="$(openssl rand -hex 32)"; echo "::add-mask::$ADMIN_API_SECRET"; echo "ADMIN_API_SECRET=$ADMIN_API_SECRET" >> "$GITHUB_ENV"
@@ -133,12 +134,14 @@ jobs:
           echo "::error::The backend did not start"; exit 1
 
       - name: Let the emulator use KVM
+        if: env.WHAT != 'apk'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
       - name: Run on the emulator
+        if: env.WHAT != 'apk'
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -151,6 +154,27 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash app-src/tools/ci/device.sh "$RUNNER_TEMP/out"
+
+      # "apk": the test apps for people, as a release of the PRIVATE app repository (never here).
+      - name: Publish the test apps (private release)
+        if: env.WHAT == 'apk'
+        env:
+          TOKEN: ${{ secrets[needs.plan.outputs.token] }}
+        run: |
+          set -euo pipefail
+          TAG="test-$(date -u +%Y%m%d-%H%M)"
+          SHA="$(git -C app-src rev-parse --short HEAD)"
+          BODY=$(jq -n --arg t "$TAG" --arg b "Test build of branch ${{ needs.plan.outputs.app_ref }} ($SHA). Debug build: on the sign-in screen tap \"Test build. Server\" to set the test server address." '{tag_name:$t, name:$t, body:$b, prerelease:true, target_commitish:"main"}')
+          R=$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$APP_REPO/releases" -d "$BODY")
+          ID=$(echo "$R" | jq -r '.id')
+          [ "$ID" != "null" ] || { echo "::error::The release was not made"; echo "$R" | jq -r '.message'; exit 1; }
+          for f in app practice; do
+            N="nexora-ai-$f-debug.apk"; [ $f = practice ] && N="nexora-practice-debug.apk"
+            curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/vnd.android.package-archive" \
+              --data-binary @"$RUNNER_TEMP/out/$f.apk" "https://uploads.github.com/repos/$APP_REPO/releases/$ID/assets?name=$N" | jq -r '.name // .message'
+          done
+          echo "PASS published the test apps (private release $TAG)" | tee -a "$RUNNER_TEMP/out/public.txt"
+          rm -f "$RUNNER_TEMP/out/app.apk" "$RUNNER_TEMP/out/practice.apk"
 
       - name: Result (PASS / FAIL lines only)
         if: always()
