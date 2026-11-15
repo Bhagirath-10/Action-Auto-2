@@ -119,7 +119,7 @@ jobs:
       # secrets made up for this run. Test sign-in codes are shown in the app (NX_OTP_MODE=echo).
       - name: Start the backend on this machine (its container, production mode)
         run: |
-          docker build -q -t nexora-backend backend-src/backend > "$RUNNER_TEMP/out/docker_build.txt" 2>&1 || { echo "::error::The backend image did not build"; exit 1; }
+          docker build --progress=plain -t nexora-backend backend-src/backend > "$RUNNER_TEMP/out/docker_build.txt" 2>&1 || { echo "::error::The backend image did not build"; echo "FAIL backend image" >> "$RUNNER_TEMP/out/public.txt"; exit 1; }
           ADMIN_API_SECRET="$(openssl rand -hex 32)"; echo "::add-mask::$ADMIN_API_SECRET"; echo "ADMIN_API_SECRET=$ADMIN_API_SECRET" >> "$GITHUB_ENV"
           docker run -d --name nexora-backend -p 127.0.0.1:8080:8080 \
             -e JWT_SECRET="$(openssl rand -hex 32)" -e ADMIN_API_SECRET="$ADMIN_API_SECRET" -e ADMIN_API_WRITES=1 \
