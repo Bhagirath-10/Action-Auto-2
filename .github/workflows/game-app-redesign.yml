@@ -1,0 +1,154 @@
+name: Game app - Nexora redesign check (test build only)
+
+# Checks a branch of the PRIVATE game app repository (Bhagirath-10/Game-Auto-2, folder
+# android-app), e.g. nexora-redesign. A TEST, never a release to users:
+#   1. the unit tests and the builds the QA workflow makes (full and shell release);
+#   2. "shots": a debug build (no backend) is opened on an emulator and every main page is
+#      photographed (scripts/nexora_ui_tour.sh of that branch). Nothing is played;
+#   3. "apk": the full release APK goes on a PRE-RELEASE of the private repository (tag
+#      nexora-redesign-test-<date>, not latest). Phones never get it: the app's updates come
+#      from Bhautik-4B/Action-Auto only.
+# Everything (logs, screenshots) goes to branch "nexora-redesign-results" of the private
+# repository; this public log shows PASS / FAIL lines only, never a token or the code.
+# Runs when game-app-redesign.txt changes: "<app branch> <shots> <apk>".
+# Secret needed here: GAME_REPO_TOKEN, a fine-grained token with Contents read and write on
+# Bhagirath-10/Game-Auto-2 only (no other token of this repository can read it).
+
+on:
+  push:
+    branches: [ci]
+    paths:
+      - game-app-redesign.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: game-app-redesign
+  cancel-in-progress: true
+
+env:
+  APP_REPO: Bhagirath-10/Game-Auto-2
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: What to do
+        id: what
+        run: |
+          read -r APP REST < game-app-redesign.txt
+          echo "$APP" | grep -Eq '^[A-Za-z0-9._/-]{1,80}$' || { echo "::error::game-app-redesign.txt: the branch is not valid"; exit 1; }
+          echo "app_ref=$APP" >> "$GITHUB_OUTPUT"
+          echo "shots=$(echo " $REST " | grep -q ' shots ' && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
+          echo "apk=$(echo " $REST " | grep -q ' apk ' && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
+      - name: The token can read the private repository
+        env:
+          GAME_REPO_TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
+        run: |
+          cd "$RUNNER_TEMP"
+          [ -n "$GAME_REPO_TOKEN" ] || { echo "::error::Add the secret GAME_REPO_TOKEN (Contents read and write on $APP_REPO only)."; exit 1; }
+          git ls-remote "https://x-access-token:$GAME_REPO_TOKEN@github.com/$APP_REPO.git" HEAD >/dev/null 2>&1 || { echo "::error::GAME_REPO_TOKEN cannot read $APP_REPO"; exit 1; }
+          echo "PASS token"
+      - name: Checkout the app (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ steps.what.outputs.app_ref }}
+          token: ${{ secrets.GAME_REPO_TOKEN }}
+          path: app-src
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - name: Unit tests and the QA builds (full and shell release)
+        working-directory: app-src/android-app
+        env:
+          VERSION_CODE: "20113"
+          VERSION_NAME: "2.1.13-nexora-test"
+          BACKEND_URL: https://4brummyhome.synoventum.us.cc
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          export LOGIC_FLOOR="$(grep -oE '^[0-9]+' ../logic-floor.txt 2>/dev/null | head -1 || echo 0)"
+          if gradle --no-daemon --console=plain testFullReleaseUnitTest assembleFullRelease assembleShellRelease >"$RUNNER_TEMP/out/build_log.txt" 2>&1; then
+            echo "PASS unit tests (full) and release builds (full, shell)" | tee -a "$RUNNER_TEMP/out/public.txt"
+            cp app/build/outputs/apk/full/release/app-full-release.apk "$RUNNER_TEMP/nexora-full-release.apk"
+          else
+            echo "FAIL unit tests or release builds (details in the private results)" | tee -a "$RUNNER_TEMP/out/public.txt"
+            echo "build_failed=1" >> "$GITHUB_ENV"
+          fi
+      - name: Debug build for the emulator (no backend)
+        if: steps.what.outputs.shots == '1' && env.build_failed != '1'
+        working-directory: app-src/android-app
+        env:
+          APP_ABIS: x86_64
+        run: |
+          if gradle --no-daemon --console=plain assembleFullDebug >"$RUNNER_TEMP/out/debug_build_log.txt" 2>&1; then
+            cp app/build/outputs/apk/full/debug/app-full-debug.apk "$RUNNER_TEMP/nexora-debug.apk"
+            echo "PASS debug build" | tee -a "$RUNNER_TEMP/out/public.txt"
+          else
+            echo "FAIL debug build (details in the private results)" | tee -a "$RUNNER_TEMP/out/public.txt"
+            echo "build_failed=1" >> "$GITHUB_ENV"
+          fi
+      - name: Let the emulator use KVM
+        if: steps.what.outputs.shots == '1' && env.build_failed != '1'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Every page on the emulator
+        if: steps.what.outputs.shots == '1' && env.build_failed != '1'
+        timeout-minutes: 40
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          profile: pixel_4
+          cores: 4
+          ram-size: 4096M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          disable-animations: true
+          script: bash app-src/scripts/nexora_ui_tour.sh "$RUNNER_TEMP/nexora-debug.apk" "$RUNNER_TEMP/out/shots" > "$RUNNER_TEMP/out/tour_console.txt" 2>&1 && echo "PASS screenshots" || echo "FAIL screenshots (details in the private results)"
+      - name: Test APK to a pre-release of the private repository (not latest)
+        if: steps.what.outputs.apk == '1' && env.build_failed != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
+        run: |
+          TAG="nexora-redesign-test-$(TZ=Asia/Kolkata date +%Y%m%d-%H%M)"
+          APK="$RUNNER_TEMP/Nexora-AI-redesign-TEST-2.1.13.apk"
+          cp "$RUNNER_TEMP/nexora-full-release.apk" "$APK"
+          SHA="$(git -C app-src rev-parse HEAD)"
+          gh release create "$TAG" "$APK" --repo "$APP_REPO" --target "$SHA" --prerelease --latest=false \
+            --title "Nexora AI redesign: TEST APK (not for users)" \
+            --notes "Test build of branch ${{ steps.what.outputs.app_ref }} ($SHA). Not a release: phones never get it. Install on a test phone only." > /dev/null
+          echo "PASS test APK: pre-release $TAG of the private repository" | tee -a "$RUNNER_TEMP/out/public.txt"
+      - name: Results to branch nexora-redesign-results (private repository)
+        if: always()
+        env:
+          TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
+        run: |
+          [ -n "$TOKEN" ] || exit 0
+          D="$(TZ=Asia/Kolkata date +%Y%m%d-%H%M%S)-run${GITHUB_RUN_ID}"
+          mkdir -p "$RUNNER_TEMP/res" && cd "$RUNNER_TEMP/res"
+          git init -q
+          git remote add origin "https://x-access-token:${TOKEN}@github.com/${APP_REPO}.git"
+          if git fetch -q --depth 1 origin nexora-redesign-results 2>/dev/null; then git checkout -q -b r FETCH_HEAD; else git checkout -q --orphan r; fi
+          mkdir -p "runs/$D" && cp -r "$RUNNER_TEMP/out"/. "runs/$D"/ 2>/dev/null || true
+          git -C "$GITHUB_WORKSPACE/app-src" rev-parse HEAD > "runs/$D/commit.txt" 2>/dev/null || true
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Nexora redesign check $D"
+          git push -q origin HEAD:nexora-redesign-results && echo "Saved to runs/$D of the private repository"
+      - name: Fail if a check failed
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/out/public.txt" ] || exit 1
+          ! grep -q '^FAIL' "$RUNNER_TEMP/out/public.txt"
