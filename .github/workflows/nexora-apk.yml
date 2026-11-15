@@ -86,7 +86,7 @@ jobs:
           R=$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$APP_REPO/releases" -d "$BODY")
           ID=$(echo "$R" | jq -r '.id')
           [ "$ID" != "null" ] || { echo "::error::The release was not made"; echo "$R" | jq -r '.message'; exit 1; }
-          for f in app practice; do
+          for f in app; do   # one app only: the practice app is only for the automatic tests
             N="nexora-ai-$f-debug.apk"; [ $f = practice ] && N="nexora-practice-debug.apk"
             curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/vnd.android.package-archive" \
               --data-binary @"$RUNNER_TEMP/out/$f.apk" "https://uploads.github.com/repos/$APP_REPO/releases/$ID/assets?name=$N" | jq -r '.name // .message'
