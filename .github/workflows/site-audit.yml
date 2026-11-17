@@ -1,13 +1,13 @@
 name: Site Audit Probe
 
-# Network/TLS/DNS probe of a public website. Results go only to a short-lived
-# artifact (not the log). Runs on pushes to the site-audit-* branches.
+# Network/TLS/DNS probe of a public website. Results are encrypted to the
+# auditor's public key and pushed to an audit-results-* branch. Runs on pushes to the site-audit-* branches.
 on:
   push:
     branches: ['site-audit-*']
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   probe:
@@ -17,8 +17,6 @@ jobs:
       SITE: https://starskyaviation.co.uk
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Install tools
         run: sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq dnsutils nmap >/dev/null
       - name: Probe
@@ -29,11 +27,21 @@ jobs:
           /tmp/testssl/testssl.sh --quiet --color 0 --fast -p -S -h -U --jsonfile out/testssl.json "$SITE" > out/testssl.txt 2>&1 || true
       - name: nmap top ports
         run: sudo nmap -Pn -sV --top-ports 100 -T4 "$(echo $SITE | sed -E 's#https?://##')" -oN out/nmap.txt > /dev/null 2>&1 || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: probe-results
-          path: out/
-          retention-days: 1
+      - name: Encrypt and push results
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          tar czf /tmp/r.tgz -C . out
+          openssl rand -hex 32 > /tmp/k
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/r.tgz -out /tmp/r.enc -pass file:/tmp/k
+          openssl pkeyutl -encrypt -pubin -inkey audit/pub.pem -pkeyopt rsa_padding_mode:oaep -in /tmp/k -out /tmp/k.enc
+          rm /tmp/k
+          git config --global user.email "github-actions@users.noreply.github.com"; git config --global user.name "github-actions"
+          git checkout --orphan audit-results-probe
+          git rm -rfq .
+          cp /tmp/r.enc results.enc; cp /tmp/k.enc key.enc
+          git add results.enc key.enc && git commit -qm "encrypted audit results"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" audit-results-probe
 
   browser:
     runs-on: ubuntu-latest
@@ -42,8 +50,6 @@ jobs:
       SITE: https://starskyaviation.co.uk/
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -63,8 +69,18 @@ jobs:
             npx lighthouse "$SITE" --chrome-flags="--headless=new --no-sandbox" --output=json --output=html --output-path=out/lh-mobile-$i --quiet > /dev/null 2>&1 || true
             npx lighthouse "$SITE" --preset=desktop --chrome-flags="--headless=new --no-sandbox" --output=json --output=html --output-path=out/lh-desktop-$i --quiet > /dev/null 2>&1 || true
           done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: browser-results
-          path: audit/out/
-          retention-days: 1
+      - name: Encrypt and push results
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          tar czf /tmp/r.tgz -C audit out
+          openssl rand -hex 32 > /tmp/k
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/r.tgz -out /tmp/r.enc -pass file:/tmp/k
+          openssl pkeyutl -encrypt -pubin -inkey audit/pub.pem -pkeyopt rsa_padding_mode:oaep -in /tmp/k -out /tmp/k.enc
+          rm /tmp/k
+          git config --global user.email "github-actions@users.noreply.github.com"; git config --global user.name "github-actions"
+          git checkout --orphan audit-results-browser
+          git rm -rfq .
+          cp /tmp/r.enc results.enc; cp /tmp/k.enc key.enc
+          git add results.enc key.enc && git commit -qm "encrypted audit results"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" audit-results-browser
