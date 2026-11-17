@@ -1,0 +1,36 @@
+name: Site Audit Probe
+
+# Network/TLS/DNS probe of a public website. Results go only to a short-lived
+# artifact (not the log). Runs on pushes to the site-audit-* branches.
+on:
+  push:
+    branches: ['site-audit-*']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SITE: https://starskyaviation.co.uk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install tools
+        run: sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq dnsutils nmap >/dev/null
+      - name: Probe
+        run: bash audit/probe.sh
+      - name: TLS scan (testssl.sh)
+        run: |
+          git clone -q --depth 1 https://github.com/testssl/testssl.sh.git /tmp/testssl
+          /tmp/testssl/testssl.sh --quiet --color 0 --fast -p -S -h -U --jsonfile out/testssl.json "$SITE" > out/testssl.txt 2>&1 || true
+      - name: nmap top ports
+        run: sudo nmap -Pn -sV --top-ports 100 -T4 "$(echo $SITE | sed -E 's#https?://##')" -oN out/nmap.txt > /dev/null 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-results
+          path: out/
+          retention-days: 1
