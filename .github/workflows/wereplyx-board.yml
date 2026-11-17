@@ -55,8 +55,19 @@ jobs:
           MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          [ -n "$PROJECTS_TOKEN" ] || { echo "::error::The PROJECTS_TOKEN secret is missing"; exit 1; }
-          # The store repository needs a token that can push to it: the first secret that can.
+          # Board token: the first secret that can read and write the board owner's projects.
+          proj=""
+          for name in PROJECTS_TOKEN MULTISPACE_REPO_TOKEN PRIVATE_REPO_TOKEN; do
+            tok="${!name:-}"; [ -n "$tok" ] || continue
+            ok=$(curl -fsS -H "Authorization: Bearer $tok" -H "Content-Type: application/json" https://api.github.com/graphql \
+                   -d "{\"query\":\"{ user(login: \\\"${BOARD_OWNER}\\\") { projectsV2(first: 1) { totalCount } } }\"}" 2>/dev/null \
+                 | python3 -c "import json,sys; d=json.load(sys.stdin); print('yes' if not d.get('errors') and (d.get('data') or {}).get('user') else 'no')" 2>/dev/null || echo no)
+            echo "$name: can read the board owner's projects = $ok"
+            if [ "$ok" = yes ] && [ -z "$proj" ]; then proj="$name"; fi
+          done
+          [ -n "$proj" ] || { echo "::error::No secret can read the projects of ${BOARD_OWNER}: add PROJECTS_TOKEN (classic token with the project scope)"; exit 1; }
+          echo "project=$proj" >> "$GITHUB_OUTPUT"
+          # Store token: the first secret that can push to the store repository.
           pick=""
           for name in PRIVATE_REPO_TOKEN PROJECTS_TOKEN MULTISPACE_REPO_TOKEN; do
             tok="${!name:-}"; [ -n "$tok" ] || continue
@@ -68,12 +79,12 @@ jobs:
           done
           [ -n "$pick" ] || { echo "::error::No secret can push to ${STORE_REPO}: give PRIVATE_REPO_TOKEN (or PROJECTS_TOKEN) Contents read/write on it"; exit 1; }
           echo "store=$pick" >> "$GITHUB_OUTPUT"
-          echo "Store token: $pick"
+          echo "Board token: $proj, store token: $pick"
 
       - name: Find the board
         id: find
         env:
-          TOKEN: ${{ secrets.PROJECTS_TOKEN }}
+          TOKEN: ${{ secrets[steps.tokens.outputs.project] }}
         run: |
           set -euo pipefail
           if [ -n "$BOARD_NUMBER" ]; then echo "number=$BOARD_NUMBER" >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -119,7 +130,7 @@ jobs:
       - name: Apply the requests and read the board
         id: ops
         env:
-          TOKEN: ${{ secrets.PROJECTS_TOKEN }}
+          TOKEN: ${{ secrets[steps.tokens.outputs.project] }}
           BOARD_NUMBER: ${{ steps.find.outputs.number }}
           APPLY: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.apply) }}
         run: |
