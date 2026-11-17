@@ -13,7 +13,9 @@ Environment:
   APPLY          "true" to apply requests.json, anything else only reads the board
 
 requests.json is a list of operations. A card is picked by "item" (its project item id,
-from board.json) or by "title" (exact, must match one card).
+from board.json), by "issue" ("owner/name#123", or "#123" / 123 for ISSUE_REPO) or by
+"title" (exact, must match one card). An issue that is not on the board yet is added to it
+first (unless the op is "comment" only).
 
   {"op": "create",  "title": "...", "body": "...", "status": "Todo",
                     "assignees": ["Bhautik-4B"], "fields": {"Priority": "High"}}
@@ -24,9 +26,14 @@ from board.json) or by "title" (exact, must match one card).
   {"op": "comment", "title": "...", "body": "..."}                  (issue cards only)
   {"op": "convert", "title": "...", "repo": "owner/name"}           (draft -> issue)
   {"op": "archive", "title": "..."}
+  {"op": "add",     "issue": "owner/name#123", "status": "Todo"}        (existing issue -> board)
+  {"op": "close",   "issue": "#123", "reason": "completed"}            (or "not_planned")
+  {"op": "reopen",  "issue": "#123"}
 
 "create" on a title that already exists updates that card instead of adding a second one.
-Every operation may also carry "status", "assignees", "fields" and "comment".
+Every operation may also carry "status", "assignees", "fields", "comment" and
+"close" (true / "completed" / "not_planned"). "issue" refs are never fuzzy: owner/name must
+be reachable with TOKEN.
 """
 import json
 import os
@@ -160,9 +167,41 @@ class Board:
                 return hits[0]
         raise GqlError(f"no option '{wanted}' in field '{field['name']}' (options: {[o['name'] for o in opts]})")
 
+    def issue_ref(self, ref):
+        """'owner/name#12', '#12' or 12 -> ('owner/name', 12)."""
+        txt = str(ref).strip()
+        repo, _, num = txt.rpartition("#")
+        repo = repo.strip() or ISSUE_REPO
+        if not repo or not num.strip().isdigit():
+            raise GqlError("issue must look like 'owner/name#123' (or '#123' with ISSUE_REPO set)")
+        return repo, int(num)
+
+    def issue_node(self, ref):
+        repo, num = self.issue_ref(ref)
+        o, n = repo.split("/")
+        d = gql("""query($o: String!, $n: String!, $num: Int!) { repository(owner: $o, name: $n) {
+              issueOrPullRequest(number: $num) { ... on Issue { id } ... on PullRequest { id } } } }""",
+                {"o": o, "n": n, "num": num})
+        node = ((d.get("repository") or {}).get("issueOrPullRequest") or {})
+        if not node.get("id"):
+            raise GqlError(f"issue {repo}#{num} not found or not reachable with this token")
+        return node["id"]
+
+    def add_issue(self, ref):
+        content = self.issue_node(ref)
+        d = gql("""mutation($p: ID!, $c: ID!) { addProjectV2ItemById(input: {projectId: $p, contentId: $c}) {
+              item { %s } } }""" % ITEM_FIELDS, {"p": self.p["id"], "c": content})
+        card = flat(d["addProjectV2ItemById"]["item"])
+        self.items = [i for i in self.items if i["item"] != card["item"]] + [card]
+        return card
+
     def find(self, op):
         if op.get("item"):
             hit = [i for i in self.items if i["item"] == op["item"]]
+        elif op.get("issue") is not None:
+            repo, num = self.issue_ref(op["issue"])
+            hit = [i for i in self.items if i["number"] == num and (i["repo"] or "").lower() == repo.lower()
+                   and not i["archived"]]
         elif op.get("title"):
             hit = [i for i in self.items if i["title"] == op["title"] and not i["archived"]]
         else:
@@ -277,6 +316,18 @@ class Board:
             self.edit(new, assignees=card["assignees"])
         return new
 
+    def set_state(self, card, close, reason="completed"):
+        if card["type"] != "ISSUE":
+            raise GqlError("only issue cards can be closed or reopened here")
+        if close:
+            r = "NOT_PLANNED" if norm(reason) in ("notplanned", "wontfix", "duplicate") else "COMPLETED"
+            gql("mutation($i: ID!, $r: IssueClosedStateReason) { closeIssue(input: {issueId: $i, stateReason: $r}) { clientMutationId } }",
+                {"i": card["content_id"], "r": r})
+            card["state"] = "CLOSED"
+        else:
+            gql("mutation($i: ID!) { reopenIssue(input: {issueId: $i}) { clientMutationId } }", {"i": card["content_id"]})
+            card["state"] = "OPEN"
+
     def archive(self, card):
         gql("mutation($p: ID!, $i: ID!) { archiveProjectV2Item(input: {projectId: $p, itemId: $i}) { item { id } } }",
             {"p": self.p["id"], "i": card["item"]})
@@ -287,6 +338,12 @@ class Board:
         kind = op.get("op")
         card = self.find(op)
         created = False
+        if card is None and op.get("issue") is not None and kind != "create":
+            if kind == "comment" and not any(op.get(k) for k in ("status", "fields", "assignees")):
+                # A comment alone does not need the board: write it on the issue directly.
+                self.comment({"type": "ISSUE", "content_id": self.issue_node(op["issue"])}, op.get("body") or "")
+                return {"item": None, "title": None, "status": None, "url": None}, False
+            card = self.add_issue(op["issue"])
         if kind == "create":
             if not op.get("title"):
                 raise GqlError("create needs a title")
@@ -294,7 +351,7 @@ class Board:
                 card, created = self.create(op), True
         elif card is None:
             raise GqlError("card not found")
-        elif kind not in ("edit", "status", "assign", "fields", "comment", "convert", "archive"):
+        elif kind not in ("edit", "status", "assign", "fields", "comment", "convert", "archive", "add", "close", "reopen"):
             raise GqlError(f"unknown op '{kind}'")
 
         if kind == "convert" or op.get("convert"):
@@ -315,6 +372,12 @@ class Board:
         text = op.get("body") if kind == "comment" else op.get("comment")
         if text:
             self.comment(card, text)
+        # Closing comes last, after the comment that explains it.
+        if kind == "close" or op.get("close"):
+            reason = op.get("reason") or (op["close"] if isinstance(op.get("close"), str) else "completed")
+            self.set_state(card, True, reason)
+        elif kind == "reopen":
+            self.set_state(card, False)
         return card, created
 
 
