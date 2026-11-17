@@ -1,0 +1,91 @@
+name: iOS Setup
+
+# One-time setup of an app's GitHub environments and secrets. Creating
+# environments and writing their secrets needs repo admin, so this uses the
+# owner token in the PRIVATE_REPO secret.
+#
+#   step=environments  creates "<app>" and "<app>-production" (the latter needs
+#                      approval) and prints both environments' public keys.
+#   step=secrets       writes secrets into the environment "target":
+#                      "encrypted" = {"key_id": "...", "secrets": {"NAME": "<sealed-box base64>"}}
+#                      (values already encrypted with that environment's public key)
+#                      "plain" = {"NAME": "value"} for non-sensitive values only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App
+        type: choice
+        options: [suum, pillowo, splik]
+      step:
+        description: What to do
+        type: choice
+        options: [environments, secrets]
+      target:
+        description: 'Environment to write secrets to (e.g. splik or splik-production)'
+        required: false
+        default: ""
+      encrypted:
+        description: 'Encrypted secrets JSON (step=secrets)'
+        required: false
+        default: ""
+      plain:
+        description: 'Non-sensitive values JSON (step=secrets)'
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.PRIVATE_REPO }}
+      APP: ${{ inputs.app }}
+    steps:
+      - name: Environments
+        if: inputs.step == 'environments'
+        env:
+          REVIEWERS: 4BornGithub Bhagirath-10
+        run: |
+          R="$GITHUB_REPOSITORY"
+          gh api -X PUT "repos/$R/environments/$APP" > /dev/null
+          ids=""; for u in $REVIEWERS; do ids="$ids{\"type\":\"User\",\"id\":$(gh api "users/$u" -q .id)},"; done
+          echo "{\"prevent_self_review\":false,\"reviewers\":[${ids%,}]}" > "$RUNNER_TEMP/prod.json"
+          gh api -X PUT "repos/$R/environments/$APP-production" --input "$RUNNER_TEMP/prod.json" > /dev/null
+          for e in "$APP" "$APP-production"; do
+            echo "KEY $e $(gh api "repos/$R/environments/$e/secrets/public-key" -q '.key_id + " " + .key')"
+          done
+
+      - name: Secrets
+        if: inputs.step == 'secrets'
+        env:
+          TARGET: ${{ inputs.target }}
+          ENCRYPTED: ${{ inputs.encrypted }}
+          PLAIN: ${{ inputs.plain }}
+        run: |
+          pip install --quiet pynacl
+          python3 - <<'PY'
+          import base64, json, os, subprocess
+          from nacl import encoding, public
+          repo, env = os.environ["GITHUB_REPOSITORY"], os.environ["TARGET"]
+          assert env, "target is required"
+          def put(name, key_id, value):
+              body = json.dumps({"encrypted_value": value, "key_id": key_id})
+              subprocess.run(["gh", "api", "-X", "PUT", f"repos/{repo}/environments/{env}/secrets/{name}", "--input", "-"],
+                             input=body.encode(), check=True, capture_output=True)
+              print("set", env, name)
+          enc = json.loads(os.environ["ENCRYPTED"] or "{}")
+          for name, value in enc.get("secrets", {}).items():
+              put(name, enc["key_id"], value)
+          plain = json.loads(os.environ["PLAIN"] or "{}")
+          if plain:
+              k = json.loads(subprocess.run(["gh", "api", f"repos/{repo}/environments/{env}/secrets/public-key"],
+                                            check=True, capture_output=True).stdout)
+              box = public.SealedBox(public.PublicKey(k["key"].encode(), encoding.Base64Encoder()))
+              for name, value in plain.items():
+                  put(name, k["key_id"], base64.b64encode(box.encrypt(value.encode())).decode())
+          PY

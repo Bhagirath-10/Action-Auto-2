@@ -1,0 +1,249 @@
+# App Store Connect steps used by the workflows. Everything comes from
+# environment variables (filled from the GitHub environment secrets); nothing
+# app-specific is stored in this public repo.
+#
+#   ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8   App Store Connect API key
+#   BUNDLE_ID                                 the app's bundle identifier
+
+default_platform(:ios)
+
+platform :ios do
+  # The .p8 text as a clean PEM: secrets pasted on one line, with literal "\n"
+  # or with Windows line ends otherwise fail with "invalid curve name".
+  def p8_content
+    raw = ENV.fetch("ASC_KEY_P8").gsub("\\n", "\n")
+    body = raw.gsub(/-----[^-]+-----/, "").gsub(/\s+/, "")
+    "-----BEGIN PRIVATE KEY-----\n#{body.scan(/.{1,64}/).join("\n")}\n-----END PRIVATE KEY-----\n"
+  end
+
+  def asc_key
+    app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_content: p8_content,
+      duration: 1200
+    )
+  end
+
+  # Attach the requested TestFlight build to the editable App Store version.
+  def ensure_build(bundle_id, version, build_number)
+    record = Spaceship::ConnectAPI::App.find(bundle_id)
+    edit = record.get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS, includes: "build")
+    UI.user_error!("No editable App Store version found") unless edit
+    return if edit.build && edit.build.version == build_number
+    b = Spaceship::ConnectAPI::Build.all(app_id: record.id, version: version, build_number: build_number,
+                                         platform: Spaceship::ConnectAPI::Platform::IOS).first
+    UI.user_error!("Build #{version} (#{build_number}) not found") unless b
+    edit.select_build(build_id: b.id)
+    UI.message("Attached build #{version} (#{build_number})")
+  end
+
+  # Cancel a submission that is still waiting for review (to replace its build).
+  def cancel_waiting(bundle_id)
+    record = Spaceship::ConnectAPI::App.find(bundle_id)
+    waiting = record.get_review_submissions(filter: { platform: "IOS", state: "WAITING_FOR_REVIEW" }).first
+    return unless waiting
+    waiting.cancel_submission
+    20.times do
+      state = Spaceship::ConnectAPI::ReviewSubmission.get(review_submission_id: waiting.id).state rescue "COMPLETE"
+      break unless %w[WAITING_FOR_REVIEW CANCELING].include?(state)
+      sleep 6
+    end
+    UI.message("Cancelled the submission that was waiting for review")
+  end
+
+  def apple_error(e)
+    e.respond_to?(:error_info) && e.error_info ? e.error_info.to_json : e.message
+  end
+
+  # Resubmit the open rejected submission; if Apple refuses, cancel it and
+  # submit the edit version in a new submission.
+  def resubmit_rejected(bundle_id, rejected)
+    rejected.submit_for_review
+    UI.message("Resubmitted the rejected submission")
+  rescue Spaceship::UnexpectedResponse => e
+    UI.important("Resubmit refused: #{apple_error(e)}")
+    rejected.cancel_submission
+    20.times do
+      state = Spaceship::ConnectAPI::ReviewSubmission.get(review_submission_id: rejected.id).state rescue "COMPLETE"
+      break unless %w[UNRESOLVED_ISSUES CANCELING].include?(state)
+      sleep 6
+    end
+    UI.message("Cancelled the rejected submission")
+    record = Spaceship::ConnectAPI::App.find(bundle_id)
+    version = record.get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+    begin
+      submission = record.create_review_submission(platform: Spaceship::ConnectAPI::Platform::IOS)
+      submission.add_app_store_version_to_review_items(app_store_version_id: version.id)
+      submission.submit_for_review
+      UI.message("Submitted in a new review submission")
+    rescue Spaceship::UnexpectedResponse => e2
+      UI.user_error!("New submission refused: #{apple_error(e2)}")
+    end
+  end
+
+  # Key works and the app record exists in App Store Connect.
+  lane :verify_asc do
+    asc_key
+    build = latest_testflight_build_number(app_identifier: ENV.fetch("BUNDLE_ID"), initial_build_number: 0)
+    version = lane_context[SharedValues::LATEST_TESTFLIGHT_VERSION]
+    UI.success("App Store Connect OK - latest TestFlight build: #{version || '-'} (#{build})")
+    begin
+      app = Spaceship::ConnectAPI::App.find(ENV.fetch("BUNDLE_ID"))
+      latest = Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: "-uploadedDate", limit: 1).first
+      UI.message("Latest upload: #{latest.app_version} (#{latest.version}) - processing: #{latest.processing_state}") if latest
+    rescue => e
+      UI.important("Could not read processing state: #{e.class}")
+    end
+  end
+
+  # Read-only: App Store versions with their review state, open review
+  # submissions and the latest TestFlight uploads. Changes nothing.
+  lane :status do
+    asc_key
+    app = Spaceship::ConnectAPI::App.find(ENV.fetch("BUNDLE_ID"))
+    UI.user_error!("App not found in App Store Connect") unless app
+
+    versions = app.get_app_store_versions(filter: { platform: "IOS" }, includes: "build", limit: 5) || []
+    versions.sort_by { |v| v.created_date.to_s }.reverse.first(5).each do |v|
+      build = v.build ? " build #{v.build.version}" : ""
+      UI.message("STATUS version #{v.version_string}#{build} - #{v.app_store_state} (release: #{v.release_type})")
+    end
+
+    begin
+      app.get_review_submissions(filter: { platform: "IOS" }, limit: 5).first(3).each do |r|
+        UI.message("STATUS review submission #{r.submitted_date || '-'} - #{r.state}")
+      end
+    rescue => e
+      UI.important("Could not read review submissions: #{e.class}")
+    end
+
+    # Raw build details (audience, min OS, bundle attributes) to compare builds.
+    begin
+      body = Spaceship::ConnectAPI.tunes_request_client.get("v1/builds", { filter: { app: app.id }, sort: "-uploadedDate", limit: 4, include: "buildBundles" }).body
+      bundles = (body["included"] || []).select { |i| i["type"] == "buildBundles" }.to_h { |i| [i["id"], i["attributes"].reject { |k, _| k =~ /url/i }] }
+      body["data"].each do |b|
+        a = b["attributes"].reject { |k, _| k =~ /url|iconAsset/i }
+        ids = (b.dig("relationships", "buildBundles", "data") || []).map { |x| x["id"] }
+        UI.message("STATUS detail #{a['version']}: #{a.to_json} bundles: #{ids.map { |i| bundles[i] }.to_json}")
+      end
+      vbody = Spaceship::ConnectAPI.tunes_request_client.get("v1/apps/#{app.id}/appStoreVersions", { limit: 3 }).body
+      vbody["data"].each do |v|
+        a = v["attributes"]
+        UI.message("STATUS detail version #{a['versionString']}: appStoreState #{a['appStoreState']}, appVersionState #{a['appVersionState']}")
+      end
+    rescue => e
+      UI.important("Could not read build details: #{e.class} #{e.message[0, 200]}")
+    end
+
+    Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: "-uploadedDate", limit: 4).first(4).each do |b|
+      sdk = (b.build_bundles || []).map { |x| "sdk #{x.sdk_build} platform #{x.platform_build}" }.uniq.join(", ")
+      UI.message("STATUS testflight #{b.app_version} (#{b.version}) uploaded #{b.uploaded_date} - #{b.processing_state} #{sdk}")
+    end
+  end
+
+  # Prints the app's age rating answers; with AGE_RATING_SET (JSON of
+  # attribute => value) it fills in only those answers first.
+  lane :age_rating do
+    asc_key
+    client = Spaceship::ConnectAPI.tunes_request_client
+    app = Spaceship::ConnectAPI::App.find(ENV.fetch("BUNDLE_ID"))
+    infos = client.get("v1/apps/#{app.id}/appInfos").body["data"]
+    info = infos.find { |i| i.dig("attributes", "appStoreState") != "READY_FOR_SALE" } || infos.first
+    decl = client.get("v1/appInfos/#{info['id']}/ageRatingDeclaration").body["data"]
+    UI.message("AGE current #{decl['attributes'].to_json}")
+    set = ENV["AGE_RATING_SET"].to_s.strip
+    unless set.empty?
+      body = { data: { type: "ageRatingDeclarations", id: decl["id"], attributes: JSON.parse(set) } }
+      begin
+        res = client.patch("v1/ageRatingDeclarations/#{decl['id']}", body).body
+        UI.message("AGE updated #{res.dig('data', 'attributes').to_json}")
+      rescue Spaceship::UnexpectedResponse => e
+        UI.user_error!("AGE update refused: #{apple_error(e)}")
+      end
+    end
+  end
+
+  # Upload a signed .ipa to TestFlight (does not wait for Apple's processing).
+  lane :upload_testflight do
+    asc_key
+    upload_to_testflight(
+      ipa: ENV.fetch("IPA_PATH"),
+      app_identifier: ENV.fetch("BUNDLE_ID"),
+      skip_waiting_for_build_processing: true,
+      changelog: ENV["CHANGELOG"].to_s.strip.empty? ? nil : ENV["CHANGELOG"]
+    )
+  end
+
+  # Submit a build that is already on TestFlight to App Store review.
+  lane :submit_production do
+    asc_key
+    app = ENV.fetch("BUNDLE_ID")
+    build = ENV["BUILD_NUMBER"].to_s.strip
+    version = ENV["APP_VERSION"].to_s.strip
+    if build.empty? && version.empty?
+      build = latest_testflight_build_number(app_identifier: app).to_s
+      version = lane_context[SharedValues::LATEST_TESTFLIGHT_VERSION].to_s
+    elsif build.empty? || version.empty?
+      UI.user_error!("Give both version and build_number, or leave both empty for the latest TestFlight build")
+    end
+    UI.message("Submitting version #{version} (build #{build}) for App Store review")
+
+    notes = ENV["RELEASE_NOTES"].to_s.strip
+    # Apple needs "What's New" per language of the listing; a "default" key is not applied
+    # when there is no local metadata folder, so use the languages the app already has.
+    release_notes = nil
+    unless notes.empty?
+      record = Spaceship::ConnectAPI::App.find(app)
+      listing = record.get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS) ||
+                record.get_live_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+      locales = listing ? listing.get_app_store_version_localizations.map(&:locale) : []
+      locales = ["en-US"] if locales.empty?
+      UI.message("What's New set for: #{locales.join(', ')}")
+      release_notes = locales.to_h { |l| [l, notes] }
+    end
+    cancel_waiting(app) if ENV["REPLACE_WAITING"] == "true"
+
+    # A rejected submission stays open as UNRESOLVED_ISSUES and blocks a new one;
+    # Apple expects that same submission to be resubmitted after fixing.
+    rejected = Spaceship::ConnectAPI::App.find(app)
+                                     .get_review_submissions(filter: { platform: "IOS", state: "UNRESOLVED_ISSUES" })
+                                     .first
+    UI.message("Open rejected submission found - it will be resubmitted") if rejected
+
+    review_notes = ENV["REVIEW_NOTES"].to_s.strip
+    unless review_notes.empty?
+      edit = Spaceship::ConnectAPI::App.find(app).get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+      detail = edit.fetch_app_store_review_detail
+      detail.update(attributes: { notes: review_notes })
+      UI.message("App Review notes updated")
+    end
+
+    empty_metadata = File.join(ENV.fetch("RUNNER_TEMP", "/tmp"), "empty-metadata")
+    FileUtils.mkdir_p(empty_metadata)
+
+    deliver(
+      app_identifier: app,
+      app_version: version,
+      build_number: build,
+      skip_binary_upload: true,
+      skip_screenshots: true,
+      skip_metadata: notes.empty?,
+      metadata_path: empty_metadata,
+      release_notes: release_notes,
+      ignore_language_directory_validation: true,
+      submit_for_review: rejected.nil?,
+      automatic_release: ENV["AUTO_RELEASE"] == "true",
+      phased_release: ENV["PHASED_RELEASE"] == "true",
+      run_precheck_before_submit: false,
+      precheck_include_in_app_purchases: false,
+      force: true,
+      submission_information: { add_id_info_uses_idfa: false }
+    )
+    if rejected
+      ensure_build(app, version, build)
+      resubmit_rejected(app, rejected)
+    end
+    UI.success("Submitted #{version} (#{build}) for review")
+  end
+end
