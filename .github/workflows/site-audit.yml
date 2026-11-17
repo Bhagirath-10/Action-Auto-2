@@ -34,3 +34,37 @@ jobs:
           name: probe-results
           path: out/
           retention-days: 1
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      SITE: https://starskyaviation.co.uk/
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        working-directory: audit
+        run: |
+          npm init -y >/dev/null
+          npm i playwright@1.48.2 @axe-core/playwright@4.10.1 lighthouse@12.2.1 >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null 2>&1
+      - name: Crawl, screenshots, axe
+        working-directory: audit
+        run: node crawl.mjs > /dev/null 2>&1 || true
+      - name: Lighthouse
+        working-directory: audit
+        run: |
+          for i in 1 2 3; do
+            npx lighthouse "$SITE" --chrome-flags="--headless=new --no-sandbox" --output=json --output=html --output-path=out/lh-mobile-$i --quiet > /dev/null 2>&1 || true
+            npx lighthouse "$SITE" --preset=desktop --chrome-flags="--headless=new --no-sandbox" --output=json --output=html --output-path=out/lh-desktop-$i --quiet > /dev/null 2>&1 || true
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: browser-results
+          path: audit/out/
+          retention-days: 1
