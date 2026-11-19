@@ -35,7 +35,7 @@ jobs:
       - name: What to test
         id: what
         run: |
-          read -r REF SCEN < rummy-e2e.txt
+          read -r REF SCEN _ < rummy-e2e.txt
           echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
           echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "scen=${SCEN:-alone}" >> "$GITHUB_OUTPUT"
       # Only names are printed: which secret reads which private repository.
