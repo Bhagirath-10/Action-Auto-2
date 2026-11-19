@@ -1,0 +1,125 @@
+name: Rummy Home - Rummy end to end (Android on ARM, 4bTech Space)
+
+# Runs the phone app's Rummy automation for real on Android on ARM (Redroid in Docker on GitHub's ARM
+# runner): 4bTech Space, Rummy Home and the app installed on each test Android, the app started by itself
+# (autostart) with Rummy's values; scripts/test_rummy.sh of the private repository watches it.
+# Scenarios (first line of rummy-e2e.txt: "<inputs branch> <scenario>"):
+#   alone  one Android, 3 copies at a time (the first to sit is the main ID)
+#   pool   two Androids in one pool (same Docker network): 2 + 2 copies, one main ID for both
+# The test's files (the app, Rummy Home, 4bTech Space, the script) come from a branch of the private
+# repository; screens and logs go back there (branch <inputs branch>-results). This log shows only
+# PASS / FAIL lines. Secret: MULTISPACE_REPO_TOKEN or PRIVATE_REPO_TOKEN (Contents read/write).
+
+on:
+  push:
+    branches: [claude/gracious-pasteur-xvuoe4]
+    paths:
+      - rummy-e2e.txt
+      - .github/workflows/rummy-e2e.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rummy-e2e
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: What to test
+        id: what
+        run: |
+          read -r REF SCEN < rummy-e2e.txt
+          echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "scen=${SCEN:-alone}" >> "$GITHUB_OUTPUT"
+      # Only names are printed: which secret reads which private repository.
+      - name: Pick a token and the private repository
+        id: token
+        env:
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
+          REF: ${{ steps.what.outputs.ref }}
+        run: |
+          for repo in Bhagirath-10/Game-Auto-2 4BornGithub/4B-Multi-Space; do
+            for n in PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN NEXORA_REPO_TOKEN; do
+              v="${!n}"; [ -n "$v" ] || { echo "$n: not set"; continue; }
+              if git ls-remote --exit-code "https://x-access-token:$v@github.com/$repo.git" "refs/heads/$REF" >/dev/null 2>&1; then
+                echo "Using $n on $repo" | tee -a "$GITHUB_STEP_SUMMARY"; echo "name=$n" >> "$GITHUB_OUTPUT"; echo "repo=$repo" >> "$GITHUB_OUTPUT"; exit 0
+              fi
+              echo "$n: cannot read branch $REF of $repo"
+            done
+          done
+          echo "::error::No token secret reads the test's branch"; exit 1
+      - name: The test's files (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.token.outputs.repo }}
+          ref: ${{ steps.what.outputs.ref }}
+          token: ${{ secrets[steps.token.outputs.name] }}
+          path: x
+          lfs: false
+      - name: Start Android (Redroid, arm64)
+        env:
+          SCEN: ${{ steps.what.outputs.scen }}
+        run: |
+          sudo apt-get update -qq >/dev/null
+          sudo apt-get install -y -qq adb aapt "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || sudo apt-get install -y -qq adb aapt >/dev/null
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+          sudo modprobe ashmem_linux 2>/dev/null || true
+          echo "runner: $(nproc) CPUs, $(free -g | awk '/Mem/{print $2}') GB"
+          IMG="redroid/redroid:12.0.0_64only-latest"
+          docker pull -q "$IMG" >/dev/null
+          docker network create rmnet >/dev/null
+          N=1; [ "$SCEN" = pool ] && N=2
+          for i in $(seq 1 $N); do
+            docker run -d --name "android$i" --network rmnet --privileged --memory=$([ $N = 2 ] && echo 6g || echo 10g) -p "600$i:5555" "$IMG" \
+              androidboot.redroid_gpu_mode=guest androidboot.use_memfd=true androidboot.redroid_width=1600 androidboot.redroid_height=720 androidboot.redroid_dpi=240 >/dev/null
+          done
+          for i in $(seq 1 $N); do
+            for t in $(seq 1 84); do adb connect "localhost:600$i" >/dev/null 2>&1; [ "$(adb -s localhost:600$i shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break; sleep 5; done
+            [ "$(adb -s localhost:600$i shell getprop sys.boot_completed | tr -d '\r')" = 1 ] || { echo "::error::Android $i did not boot"; exit 1; }
+            echo "PASS Android $i booted ($(adb -s localhost:600$i shell getprop ro.build.version.release | tr -d '\r'))"
+          done
+          echo "N=$N" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/bt" && ln -sf "$(command -v aapt)" "$RUNNER_TEMP/bt/aapt"; echo "ANDROID_HOME=$RUNNER_TEMP/sdk" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/sdk/build-tools/0" && ln -sf "$(command -v aapt)" "$RUNNER_TEMP/sdk/build-tools/0/aapt"
+      - name: Rummy, end to end
+        env:
+          SCEN: ${{ steps.what.outputs.scen }}
+        run: |
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"; I=x/e2e
+          if [ "$SCEN" = pool ]; then
+            PAIR="$(printf '%08d' $((RANDOM * RANDOM % 100000000)))"
+            RM_DEVICE=3 RM_PAIR="$PAIR" RM_COPIES=2 RM_AT=2 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1 & P1=$!
+            sleep 20
+            RM_DEVICE=3 RM_PAIR="$PAIR" RM_COPIES=2 RM_AT=2 RM_MAIN="" bash x/scripts/test_rummy.sh localhost:6002 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone2" > "$OUT/console2.txt" 2>&1 & P2=$!
+            wait $P1; R1=$?; wait $P2; R2=$?; RC=$(( R1 > R2 ? R1 : R2 ))
+          else
+            RM_COPIES=3 RM_AT=3 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
+          fi
+          for p in "$OUT"/phone*; do { echo "### $(basename "$p")"; echo '```'; cat "$p/public.txt" 2>/dev/null || echo "no result"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"; done
+          for i in $(seq 1 $N); do docker logs "android$i" > "$OUT/redroid$i.txt" 2>&1 || true; done
+          echo "RC=$RC" >> "$GITHUB_ENV"
+      - name: Save the results to the private repository
+        if: always()
+        env:
+          TOKEN: ${{ secrets[steps.token.outputs.name] }}
+          REPO: ${{ steps.token.outputs.repo }}
+          REF: ${{ steps.what.outputs.ref }}
+        run: |
+          cd "$RUNNER_TEMP/out" 2>/dev/null || exit 0
+          find . -name '*.png' -size +0 | while read -r f; do (command -v convert >/dev/null && convert "$f" -resize 50% -quality 70 "${f%.png}.jpg" && rm "$f") || true; done
+          D="$RUNNER_TEMP/res"; git clone -q --depth 1 --branch "$REF-results" "https://x-access-token:$TOKEN@github.com/$REPO.git" "$D" 2>/dev/null || { git init -q "$D"; git -C "$D" checkout -q -b "$REF-results"; git -C "$D" remote add origin "https://x-access-token:$TOKEN@github.com/$REPO.git"; }
+          R="run-${GITHUB_RUN_ID}"; mkdir -p "$D/$R"; cp -r . "$D/$R/"
+          cd "$D" && git add -A && git -c user.name=rummy-e2e -c user.email=e2e@localhost commit -q -m "Rummy e2e run $GITHUB_RUN_ID" && git push -q origin "HEAD:$REF-results" 2>&1 | grep -v -i "token\|x-access" || true
+          echo "Results: branch $REF-results, folder $R (private)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Fail if a check failed
+        if: env.RC != '0'
+        run: exit 1
