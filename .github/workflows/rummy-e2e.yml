@@ -101,6 +101,8 @@ jobs:
             sleep 20
             RM_DEVICE=3 RM_PAIR="$PAIR" RM_COPIES=2 RM_AT=2 RM_MAIN="" bash x/scripts/test_rummy.sh localhost:6002 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone2" > "$OUT/console2.txt" 2>&1 & P2=$!
             wait $P1; R1=$?; wait $P2; R2=$?; RC=$(( R1 > R2 ? R1 : R2 ))
+          elif [ "$SCEN" = screen ]; then
+            RM_COPIES=2 RM_AT=1 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           else
             RM_COPIES=3 RM_AT=3 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           fi
