@@ -47,7 +47,7 @@ jobs:
           NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
           REF: ${{ steps.what.outputs.ref }}
         run: |
-          for repo in Bhagirath-10/Game-Auto-2 4BornGithub/4B-Multi-Space; do
+          for repo in 4BornGithub/4B-Multi-Space Bhagirath-10/Game-Auto-2; do
             for n in PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN NEXORA_REPO_TOKEN; do
               v="${!n}"; [ -n "$v" ] || { echo "$n: not set"; continue; }
               if git ls-remote --exit-code "https://x-access-token:$v@github.com/$repo.git" "refs/heads/$REF" >/dev/null 2>&1; then
