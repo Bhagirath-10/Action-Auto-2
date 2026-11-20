@@ -25,35 +25,40 @@ jobs:
           persist-credentials: false
       - name: Probe
         run: |
-          read -r BOT _ < chat-widget.txt
+          read -r BOT DOMAIN _ < chat-widget.txt; DOMAIN="${DOMAIN:-example.com}"; echo "$DOMAIN" | grep -Eq '^[a-z0-9.-]{3,60}$' || exit 1
           echo "$BOT" | grep -Eq '^[A-Za-z0-9]{3,20}$' || { echo "::error::bad bot id"; exit 1; }
           O="$RUNNER_TEMP/out"; mkdir -p "$O"
           curl -sS -m 30 -A "Mozilla/5.0 (Linux; Android 14) Chrome/124 Mobile" https://apis.wereplyx.com/widget.js -o "$O/widget.js" -w "widget.js: HTTP %{http_code}, %{size_download} bytes\n" || true
           mkdir -p "$RUNNER_TEMP/p" && cd "$RUNNER_TEMP/p"
           npm init -y >/dev/null && npm i -s playwright@1.48.2 >/dev/null 2>&1 && npx playwright install --with-deps chromium >/dev/null 2>&1
+          # The page exactly as the Nexora AI app writes it (ChatFragment.page()).
           cat > page.html <<HTML
-          <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chat</title></head>
-          <body style="margin:0;background:#F4F6EF"><script src="https://apis.wereplyx.com/widget.js" data-bot-id="$BOT" defer></script></body></html>
+          <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+          <style>html,body{margin:0;height:100%;background:#FFFFFF}.wereply-launcher{opacity:0!important}</style></head><body>
+          <script src="https://apis.wereplyx.com/widget.js" data-bot-id="$BOT" data-primary-color="#0D221B" defer></script>
+          <script>
+          (function(){var said=false;function tick(){var c=document.getElementById('wereply-widget-container'),b=document.querySelector('.wereply-launcher');var open=c&&c.style.display!=='none';if(b&&!open){b.click();}if(open&&!said){said=true;console.log('[nexora] chat open');}}setInterval(tick,400);})();
+          </script></body></html>
           HTML
           cat > probe.js <<'JS'
           const { chromium, devices } = require('playwright');
           const fs = require('fs'); const O = process.env.O;
           (async () => {
             const b = await chromium.launch(); const reqs = [];
-            for (const [name, base] of [['local', 'http://localhost:8080/page.html'], ['https', 'https://example.com/']]) {
+            for (const [name, base] of [['https', `https://${process.env.DOMAIN}/app-chat`]]) {
               const ctx = await b.newContext({ ...devices['Pixel 7'] });
               const p = await ctx.newPage();
               p.on('request', r => reqs.push(`${name} ${r.method()} ${r.url()} ${r.postData() ? 'BODY ' + r.postData().slice(0, 300) : ''}`));
               p.on('console', m => reqs.push(`${name} console ${m.type()}: ${m.text().slice(0, 300)}`));
-              if (name === 'https') { await p.route('https://example.com/', r => r.fulfill({ contentType: 'text/html', body: fs.readFileSync('page.html', 'utf8') })); }
-              await p.goto(base); await p.waitForTimeout(8000);
+              if (name === 'https') { await p.route(`https://${process.env.DOMAIN}/app-chat`, r => r.fulfill({ contentType: 'text/html', body: fs.readFileSync('page.html', 'utf8') })); }
+              await p.goto(base); await p.waitForTimeout(10000);
               await p.screenshot({ path: `${O}/${name}_1_bubble.png` });
               fs.writeFileSync(`${O}/${name}_dom_before.html`, await p.content());
               const frames = p.frames().map(f => f.url()); fs.writeFileSync(`${O}/${name}_frames.txt`, frames.join('\n'));
               // The launcher: the last fixed-position element the widget added, clicked at its centre.
               const box = await p.evaluate(() => { const els = [...document.querySelectorAll('body *')].filter(e => { const s = getComputedStyle(e); return (s.position === 'fixed') && e.offsetWidth > 20 && e.offsetWidth < 120; }); const e = els[els.length - 1]; if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, tag: e.tagName, id: e.id, cls: e.className && e.className.toString() }; });
               fs.writeFileSync(`${O}/${name}_launcher.json`, JSON.stringify(box));
-              if (box) { await p.mouse.click(box.x, box.y); await p.waitForTimeout(6000); }
+              await p.waitForTimeout(6000);
               await p.screenshot({ path: `${O}/${name}_2_open.png` });
               fs.writeFileSync(`${O}/${name}_dom_after.html`, await p.content());
               fs.writeFileSync(`${O}/${name}_frames_after.txt`, p.frames().map(f => f.url()).join('\n'));
@@ -63,7 +68,7 @@ jobs:
           })();
           JS
           (python3 -m http.server 8080 >/dev/null 2>&1 &) ; sleep 2
-          O="$O" node probe.js || echo "probe failed"
+          O="$O" DOMAIN="$DOMAIN" node probe.js || echo "probe failed"
           ls -la "$O"
       - name: Save to the private repository
         if: always()
