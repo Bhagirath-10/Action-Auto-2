@@ -1,0 +1,78 @@
+name: Chat widget probe (WeReplyX, phone-sized browser)
+
+# Opens the WeReplyX website chat widget (bot id from chat-widget.txt) in a phone-sized Chromium page, as the
+# Nexora AI app's Chat tab will (a WebView with the same one-line script): saves the widget's script, the
+# network calls it makes, the page's elements and screenshots (bubble, then opened) to the private repository.
+# No app is built. Secret: MULTISPACE_REPO_TOKEN or PRIVATE_REPO_TOKEN.
+
+on:
+  push:
+    branches: [claude/gracious-pasteur-xvuoe4]
+    paths:
+      - chat-widget.txt
+      - .github/workflows/chat-widget-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Probe
+        run: |
+          read -r BOT _ < chat-widget.txt
+          echo "$BOT" | grep -Eq '^[A-Za-z0-9]{3,20}$' || { echo "::error::bad bot id"; exit 1; }
+          O="$RUNNER_TEMP/out"; mkdir -p "$O"
+          curl -sS -m 30 -A "Mozilla/5.0 (Linux; Android 14) Chrome/124 Mobile" https://apis.wereplyx.com/widget.js -o "$O/widget.js" -w "widget.js: HTTP %{http_code}, %{size_download} bytes\n" || true
+          mkdir -p "$RUNNER_TEMP/p" && cd "$RUNNER_TEMP/p"
+          npm init -y >/dev/null && npm i -s playwright@1.48.2 >/dev/null 2>&1 && npx playwright install --with-deps chromium >/dev/null 2>&1
+          cat > page.html <<HTML
+          <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chat</title></head>
+          <body style="margin:0;background:#F4F6EF"><script src="https://apis.wereplyx.com/widget.js" data-bot-id="$BOT" defer></script></body></html>
+          HTML
+          cat > probe.js <<'JS'
+          const { chromium, devices } = require('playwright');
+          const fs = require('fs'); const O = process.env.O;
+          (async () => {
+            const b = await chromium.launch(); const reqs = [];
+            for (const [name, base] of [['local', 'http://localhost:8080/page.html'], ['https', 'https://example.com/']]) {
+              const ctx = await b.newContext({ ...devices['Pixel 7'] });
+              const p = await ctx.newPage();
+              p.on('request', r => reqs.push(`${name} ${r.method()} ${r.url()} ${r.postData() ? 'BODY ' + r.postData().slice(0, 300) : ''}`));
+              p.on('console', m => reqs.push(`${name} console ${m.type()}: ${m.text().slice(0, 300)}`));
+              if (name === 'https') { await p.route('https://example.com/', r => r.fulfill({ contentType: 'text/html', body: fs.readFileSync('page.html', 'utf8') })); }
+              await p.goto(base); await p.waitForTimeout(8000);
+              await p.screenshot({ path: `${O}/${name}_1_bubble.png` });
+              fs.writeFileSync(`${O}/${name}_dom_before.html`, await p.content());
+              const frames = p.frames().map(f => f.url()); fs.writeFileSync(`${O}/${name}_frames.txt`, frames.join('\n'));
+              // The launcher: the last fixed-position element the widget added, clicked at its centre.
+              const box = await p.evaluate(() => { const els = [...document.querySelectorAll('body *')].filter(e => { const s = getComputedStyle(e); return (s.position === 'fixed') && e.offsetWidth > 20 && e.offsetWidth < 120; }); const e = els[els.length - 1]; if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, tag: e.tagName, id: e.id, cls: e.className && e.className.toString() }; });
+              fs.writeFileSync(`${O}/${name}_launcher.json`, JSON.stringify(box));
+              if (box) { await p.mouse.click(box.x, box.y); await p.waitForTimeout(6000); }
+              await p.screenshot({ path: `${O}/${name}_2_open.png` });
+              fs.writeFileSync(`${O}/${name}_dom_after.html`, await p.content());
+              fs.writeFileSync(`${O}/${name}_frames_after.txt`, p.frames().map(f => f.url()).join('\n'));
+              await ctx.close();
+            }
+            fs.writeFileSync(`${O}/requests.txt`, reqs.join('\n')); await b.close();
+          })();
+          JS
+          (python3 -m http.server 8080 >/dev/null 2>&1 &) ; sleep 2
+          O="$O" node probe.js || echo "probe failed"
+          ls -la "$O"
+      - name: Save to the private repository
+        if: always()
+        env:
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          T="${MULTISPACE_REPO_TOKEN:-$PRIVATE_REPO_TOKEN}"; B=claude/gracious-pasteur-xvuoe4-e2e-results
+          D="$RUNNER_TEMP/res"; git clone -q --depth 1 --branch "$B" "https://x-access-token:$T@github.com/4BornGithub/4B-Multi-Space.git" "$D" 2>&1 | grep -v -i token || true
+          R="chat-widget-${GITHUB_RUN_ID}"; mkdir -p "$D/$R"; cp -r "$RUNNER_TEMP/out/." "$D/$R/"
+          cd "$D" && git add -A && git -c user.name=chat-probe -c user.email=ci@localhost commit -q -m "Chat widget probe $GITHUB_RUN_ID" && git push -q origin "HEAD:$B" 2>&1 | grep -v -i "token\|x-access" || true
+          echo "Saved: $B/$R" | tee -a "$GITHUB_STEP_SUMMARY"
