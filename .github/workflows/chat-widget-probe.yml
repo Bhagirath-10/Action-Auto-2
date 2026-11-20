@@ -29,6 +29,7 @@ jobs:
           echo "$BOT" | grep -Eq '^[A-Za-z0-9]{3,20}$' || { echo "::error::bad bot id"; exit 1; }
           O="$RUNNER_TEMP/out"; mkdir -p "$O"
           curl -sS -m 30 -A "Mozilla/5.0 (Linux; Android 14) Chrome/124 Mobile" https://apis.wereplyx.com/widget.js -o "$O/widget.js" -w "widget.js: HTTP %{http_code}, %{size_download} bytes\n" || true
+          curl -sS -m 30 -A "Mozilla/5.0 (Linux; Android 14) Chrome/124 Mobile" "https://apis.wereplyx.com/widget/chat.js?v=607a6d6679bc" -o "$O/chat.js" -w "chat.js: HTTP %{http_code}, %{size_download} bytes\n" || true
           mkdir -p "$RUNNER_TEMP/p" && cd "$RUNNER_TEMP/p"
           npm init -y >/dev/null && npm i -s playwright@1.48.2 >/dev/null 2>&1 && npx playwright install --with-deps chromium >/dev/null 2>&1
           # The page as the Nexora AI app writes it (ChatFragment.page()), in each colour set to compare.
@@ -73,10 +74,10 @@ jobs:
                 const k = (d.type + ' ' + d.name + ' ' + d.ph + ' ' + d.id + ' ' + d.label).toLowerCase();
                 let v = null;
                 if (/mail/.test(k)) v = 'nexora.test@example.com';
-                else if (/phone|mobile|tel|whatsapp|number/.test(k)) v = '9876543210';
+                else if (/phone|mobile|tel|whatsapp|number/.test(k)) v = '+91 98765 43210';
                 else if (/name/.test(k)) v = 'Nexora Test';
                 else if (/company|business|org/.test(k)) v = 'Nexora AI (test)';
-                if (v && d.tag !== 'SELECT') { await el.fill(v); L(`FILLED ${k.trim()} = ${v}`); }
+                if (v && d.tag !== 'SELECT') { await el.click(); await el.fill(''); await el.type(v, { delay: 40 }); await el.dispatchEvent('change'); await el.evaluate(e => e.blur()); L(`FILLED ${k.trim()} = ${v} -> value now: ${await el.inputValue()}`); }
               }
               await shot(p, 'forest_3_form_filled');
               const go = f.locator('button:visible, [role=button]:visible').filter({ hasText: /start|submit|continue|next|chat|send|begin/i }).first();
