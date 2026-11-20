@@ -108,6 +108,8 @@ jobs:
           elif [ "$SCEN" = explore ]; then
             # No bot: Rummy's screens photographed (its tables list, tabs, a table and its menu), to the private repository.
             EXPLORE=1 RM_COPIES=1 RM_AT=1 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
+          elif [ "$SCEN" = verify ]; then
+            VERIFY_ONLY=1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           elif [ "$SCEN" = screen ]; then
             RM_COPIES=2 RM_AT=1 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           else
