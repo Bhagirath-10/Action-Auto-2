@@ -108,6 +108,15 @@ platform :ios do
     versions.sort_by { |v| v.created_date.to_s }.reverse.first(5).each do |v|
       build = v.build ? " build #{v.build.version}" : ""
       UI.message("STATUS version #{v.version_string}#{build} - #{v.app_store_state} (release: #{v.release_type})")
+      begin
+        d = v.fetch_app_store_review_detail
+        if d
+          UI.message("STATUS review notes #{v.version_string}: #{d.notes.to_s.gsub(/\s+/, ' ')[0, 300]}")
+          UI.message("STATUS review sign-in required #{v.version_string}: #{d.demo_account_required.inspect}")
+        end
+      rescue StandardError
+        nil
+      end
     end
 
     begin
