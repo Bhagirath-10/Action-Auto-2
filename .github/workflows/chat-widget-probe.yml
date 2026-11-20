@@ -74,7 +74,7 @@ jobs:
                 const k = (d.type + ' ' + d.name + ' ' + d.ph + ' ' + d.id + ' ' + d.label).toLowerCase();
                 let v = null;
                 if (/mail/.test(k)) v = 'nexora.test@example.com';
-                else if (/phone|mobile|tel|whatsapp|number/.test(k)) v = '+91 98765 43210';
+                else if (/phone|mobile|tel|whatsapp|number/.test(k)) v = '98250 33445';
                 else if (/name/.test(k)) v = 'Nexora Test';
                 else if (/company|business|org/.test(k)) v = 'Nexora AI (test)';
                 if (v && d.tag !== 'SELECT') { await el.click(); await el.fill(''); await el.type(v, { delay: 40 }); await el.dispatchEvent('change'); await el.evaluate(e => e.blur()); L(`FILLED ${k.trim()} = ${v} -> value now: ${await el.inputValue()}`); }
