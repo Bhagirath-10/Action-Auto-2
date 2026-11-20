@@ -1,0 +1,88 @@
+name: NEXORA Space - screenshots of the screens (no APK)
+
+# Draws the Space app's real screens on the JVM (Robolectric + Roborazzi: app/src/test/.../ScreenshotsTest.kt of the
+# private repository) with sample copies, and saves the pictures to the private repository (branch <ref>-results).
+# Only the unit-test task runs: no APK is built or published. First line of space-screens.txt: "<branch of 4B-Multi-Space>".
+# Secret: MULTISPACE_REPO_TOKEN or PRIVATE_REPO_TOKEN (Contents read/write on 4BornGithub/4B-Multi-Space).
+
+on:
+  push:
+    branches: [claude/gracious-pasteur-xvuoe4]
+    paths:
+      - space-screens.txt
+      - .github/workflows/space-screens.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: space-screens
+  cancel-in-progress: true
+
+jobs:
+  screens:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: What to draw
+        id: what
+        run: |
+          read -r REF _ < space-screens.txt
+          echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+      - name: Pick a token
+        id: token
+        env:
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          REF: ${{ steps.what.outputs.ref }}
+        run: |
+          for n in MULTISPACE_REPO_TOKEN PRIVATE_REPO_TOKEN; do
+            v="${!n}"; [ -n "$v" ] || { echo "$n: not set"; continue; }
+            if git ls-remote --exit-code "https://x-access-token:$v@github.com/4BornGithub/4B-Multi-Space.git" "refs/heads/$REF" >/dev/null 2>&1; then
+              echo "Using $n" | tee -a "$GITHUB_STEP_SUMMARY"; echo "name=$n" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "$n: cannot read branch $REF"
+          done
+          echo "::error::No token secret reads the branch"; exit 1
+      - name: The code (private)
+        uses: actions/checkout@v4
+        with:
+          repository: 4BornGithub/4B-Multi-Space
+          ref: ${{ steps.what.outputs.ref }}
+          token: ${{ secrets[steps.token.outputs.name] }}
+          path: x
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Draw the screens
+        run: |
+          # The engine module names an NDK; the unit tests never build native code: a placeholder folder will do.
+          mkdir -p "$RUNNER_TEMP/ndk" && printf 'Pkg.Desc = Android NDK\nPkg.Revision = 29.0.13846066\n' > "$RUNNER_TEMP/ndk/source.properties"
+          printf 'sdk.dir=%s\nndk.dir=%s\n' "$ANDROID_HOME" "$RUNNER_TEMP/ndk" > x/local.properties
+          cd x && chmod +x gradlew
+          ./gradlew --no-daemon -q :app:testDebugUnitTest --tests '*ScreenshotsTest*' -Proborazzi.test.record=true > "$RUNNER_TEMP/gradle.txt" 2>&1; RC=$?
+          grep -E "^e: |FAILED|tests completed|BUILD" "$RUNNER_TEMP/gradle.txt" | sed 's#/home/runner/work/[^ ]*/x/##' | head -40
+          ls -la app/build/screens 2>/dev/null || true
+          echo "RC=$RC" >> "$GITHUB_ENV"
+      - name: Save the pictures to the private repository
+        if: always()
+        env:
+          TOKEN: ${{ secrets[steps.token.outputs.name] }}
+          REF: ${{ steps.what.outputs.ref }}
+        run: |
+          O="$RUNNER_TEMP/out"; mkdir -p "$O"
+          cp -r x/app/build/screens/. "$O/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/gradle.txt" "$O/" 2>/dev/null || true
+          cp -r x/app/build/reports/tests "$O/test-report" 2>/dev/null || true
+          D="$RUNNER_TEMP/res"; git clone -q --depth 1 --branch "$REF-results" "https://x-access-token:$TOKEN@github.com/4BornGithub/4B-Multi-Space.git" "$D" 2>/dev/null || { git init -q "$D"; git -C "$D" checkout -q -b "$REF-results"; git -C "$D" remote add origin "https://x-access-token:$TOKEN@github.com/4BornGithub/4B-Multi-Space.git"; }
+          R="screens-${GITHUB_RUN_ID}"; mkdir -p "$D/$R"; cp -r "$O/." "$D/$R/"
+          cd "$D" && git add -A && git -c user.name=space-screens -c user.email=ci@localhost commit -q -m "Screens run $GITHUB_RUN_ID" && git push -q origin "HEAD:$REF-results" 2>&1 | grep -v -i "token\|x-access" || true
+          echo "Pictures: branch $REF-results, folder $R (private)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Result
+        if: always()
+        run: '[ "${RC:-1}" = 0 ]'
