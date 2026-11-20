@@ -4,6 +4,7 @@ name: Rummy Home - Rummy end to end (Android on ARM, 4bTech Space)
 # runner): 4bTech Space, Rummy Home and the app installed on each test Android, the app started by itself
 # (autostart) with Rummy's values; scripts/test_rummy.sh of the private repository watches it.
 # Scenarios (first line of rummy-e2e.txt: "<inputs branch> <scenario>"):
+#   explore  no bot: Rummy's screens photographed (tables list, tabs, a table, its menu)
 #   alone  one Android, 3 copies at a time (the first to sit is the main ID)
 #   pool   two Androids in one pool (same Docker network): 2 + 2 copies, one main ID for both
 # The test's files (the app, Rummy Home, 4bTech Space, the script) come from a branch of the private
@@ -104,6 +105,9 @@ jobs:
           elif [ "$SCEN" = funded ]; then
             # Dragon Tiger first (the starting amounts: 10 new guests, 3 at a time), then Rummy with all its winners, 5 at a time.
             WAIT_SEC=3600 RM_DT_COPIES=10 RM_DT_AT=3 RM_ACCOUNTS=kept RM_AT=5 RM_MAIN=@1 RM_GAMES=1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
+          elif [ "$SCEN" = explore ]; then
+            # No bot: Rummy's screens photographed (its tables list, tabs, a table and its menu), to the private repository.
+            bash x/scripts/explore_rummy.sh localhost:6001 $I/rummyhome.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           elif [ "$SCEN" = screen ]; then
             RM_COPIES=2 RM_AT=1 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           else
