@@ -35,7 +35,7 @@ jobs:
           cat > page.html <<HTML
           <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
           <style>html,body{margin:0;height:100%;background:#FFFFFF}.wereply-launcher{opacity:0!important}</style></head><body>
-          <script src="https://apis.wereplyx.com/widget.js" data-bot-id="$BOT" data-primary-color="#0D221B" defer></script>
+          <script src="https://apis.wereplyx.com/widget.js" data-bot-id="$BOT" defer></script>
           <script>
           (function(){var said=false;function tick(){var c=document.getElementById('wereply-widget-container'),b=document.querySelector('.wereply-launcher');var open=c&&c.style.display!=='none';if(b&&!open){b.click();}if(open&&!said){said=true;console.log('[nexora] chat open');}}setInterval(tick,400);})();
           </script></body></html>
