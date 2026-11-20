@@ -53,7 +53,7 @@ jobs:
           async function text(f) { try { return (await f.evaluate(() => document.body.innerText)).replace(/\n{2,}/g, '\n'); } catch (e) { return 'ERR ' + e; } }
           (async () => {
             const b = await chromium.launch();
-            for (const theme of ['forest', 'lime']) {
+            for (const theme of ['forest']) {
               const ctx = await b.newContext({ ...devices['Pixel 7'] }); const p = await ctx.newPage();
               p.on('console', m => L(`${theme} console: ${m.text().slice(0, 200)}`));
               await p.route(`https://${D}/app-chat`, r => r.fulfill({ contentType: 'text/html', body: fs.readFileSync(`${theme}.html`, 'utf8') }));
@@ -73,7 +73,7 @@ jobs:
                 const k = (d.type + ' ' + d.name + ' ' + d.ph + ' ' + d.id + ' ' + d.label).toLowerCase();
                 let v = null;
                 if (/mail/.test(k)) v = 'nexora.test@example.com';
-                else if (/phone|mobile|tel|whatsapp|number/.test(k)) v = '9999999999';
+                else if (/phone|mobile|tel|whatsapp|number/.test(k)) v = '9876543210';
                 else if (/name/.test(k)) v = 'Nexora Test';
                 else if (/company|business|org/.test(k)) v = 'Nexora AI (test)';
                 if (v && d.tag !== 'SELECT') { await el.fill(v); L(`FILLED ${k.trim()} = ${v}`); }
