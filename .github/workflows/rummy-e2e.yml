@@ -27,7 +27,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 75
+    timeout-minutes: 175
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,6 +101,9 @@ jobs:
             sleep 20
             RM_DEVICE=3 RM_PAIR="$PAIR" RM_COPIES=2 RM_AT=2 RM_MAIN="" bash x/scripts/test_rummy.sh localhost:6002 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone2" > "$OUT/console2.txt" 2>&1 & P2=$!
             wait $P1; R1=$?; wait $P2; R2=$?; RC=$(( R1 > R2 ? R1 : R2 ))
+          elif [ "$SCEN" = funded ]; then
+            # Dragon Tiger first (the starting amounts: 10 new guests, 3 at a time), then Rummy with all its winners, 5 at a time.
+            WAIT_SEC=3600 RM_DT_COPIES=10 RM_DT_AT=3 RM_ACCOUNTS=kept RM_AT=5 RM_MAIN=@1 RM_GAMES=1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           elif [ "$SCEN" = screen ]; then
             RM_COPIES=2 RM_AT=1 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           else
