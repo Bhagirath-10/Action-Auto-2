@@ -42,8 +42,8 @@ jobs:
           </script></body></html>
           HTML
           }
-          page 'data-primary-color="#0D221B" data-secondary-color="#FFFFFF" data-user-bubble-color="#0D221B" data-bot-bubble-color="#EEF5D2"' > forest.html
-          page 'data-primary-color="#B8D547" data-secondary-color="#0D221B" data-user-bubble-color="#0D221B" data-bot-bubble-color="#EEF5D2"' > lime.html
+          page 'data-primary-color="#0D221B" data-secondary-color="#FFFFFF" data-user-bubble-color="#B8D547" data-bot-bubble-color="#EEF5D2"' > forest.html
+          page 'data-primary-color="#B8D547" data-secondary-color="#0D221B" data-user-bubble-color="#B8D547" data-bot-bubble-color="#EEF5D2"' > lime.html
           cat > probe.js <<'JS'
           const { chromium, devices } = require('playwright');
           const fs = require('fs'); const O = process.env.O; const D = process.env.DOMAIN;
@@ -102,7 +102,7 @@ jobs:
           })();
           JS
           (python3 -m http.server 8080 >/dev/null 2>&1 &) ; sleep 2
-          O="$O" DOMAIN="$DOMAIN" QUESTIONS="Hi|What is Nexora AI?|How do I add money to my wallet?|Can you help me set up an automation on my phone?" node probe.js || echo "probe failed"
+          O="$O" DOMAIN="$DOMAIN" QUESTIONS="Hello|Do you support Hindi?" node probe.js || echo "probe failed"
           ls -la "$O"
       - name: Save to the private repository
         if: always()
