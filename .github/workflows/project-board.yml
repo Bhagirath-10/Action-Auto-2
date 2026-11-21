@@ -66,6 +66,54 @@ jobs:
               done
             done
           fi
+          if [ "$MODE" = apply ]; then
+            # apply <owner> <number> <repo>: the plan (plan.json) is read from the private branch; each op:
+            # {op:create,title,body,status} | {op:comment,issue,body} | {op:status,issue,status}.
+            T="$MULTISPACE_REPO_TOKEN"; P="$RUNNER_TEMP/plan"
+            git clone -q --depth 1 --branch claude/gracious-pasteur-xvuoe4-board "https://x-access-token:$T@github.com/4BornGithub/4B-Multi-Space.git" "$P" 2>/dev/null
+            [ -f "$P/plan.json" ] || { echo "::error::no plan"; exit 1; }
+            R="$A3"; echo "$R" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || { echo "::error::bad repo"; exit 1; }
+            q=$(jq -nc --arg o "$A1" --argjson num "$A2" '{query:("{ user(login: \"" + $o + "\") { projectV2(number: " + ($num|tostring) + ") { id field(name: \"Status\") { ... on ProjectV2SingleSelectField { id options { id name } } } } } }")}')
+            meta=$(gql "$T" "$q"); PID=$(echo "$meta" | jq -r '.data.user.projectV2.id'); FID=$(echo "$meta" | jq -r '.data.user.projectV2.field.id')
+            [ "$PID" != null ] || { echo "::error::board not found"; exit 1; }
+            api() { curl -sS -m 30 -H "Authorization: token $T" -H "Accept: application/vnd.github+json" "$@"; }
+            # Titles already there (no duplicates on a re-run).
+            : > "$O/titles.txt"; for pg in 1 2 3 4; do api "https://api.github.com/repos/$R/issues?state=all&per_page=100&page=$pg" | jq -r '.[] | select(.pull_request == null) | "\(.number)\t\(.title)"' >> "$O/titles.txt"; done
+            setstatus() { # itemId statusName
+              opt=$(echo "$meta" | jq -r --arg n "$2" '.data.user.projectV2.field.options[] | select(.name == $n) | .id')
+              [ -n "$opt" ] || { echo "no status $2"; return; }
+              m=$(jq -nc --arg p "$PID" --arg i "$1" --arg f "$FID" --arg o "$opt" '{query:"mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){ updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){ projectV2Item { id } } }",variables:{p:$p,i:$i,f:$f,o:$o}}')
+              gql "$T" "$m" | jq -c '.errors // "ok"'
+            }
+            additem() { # contentNodeId -> itemId
+              m=$(jq -nc --arg p "$PID" --arg c "$1" '{query:"mutation($p:ID!,$c:ID!){ addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item { id } } }",variables:{p:$p,c:$c}}')
+              gql "$T" "$m" | jq -r '.data.addProjectV2ItemById.item.id'
+            }
+            n=$(jq length "$P/plan.json"); done=0
+            for i in $(seq 0 $((n-1))); do
+              op=$(jq -r ".[$i].op" "$P/plan.json")
+              if [ "$op" = create ]; then
+                title=$(jq -r ".[$i].title" "$P/plan.json")
+                if cut -f2- "$O/titles.txt" | grep -qxF "$title"; then
+                  num=$(awk -F'\t' -v t="$title" '$2==t{print $1; exit}' "$O/titles.txt"); echo "skip $num (there)" >> "$O/result.txt"; continue
+                fi
+                body=$(jq -c ".[$i] | {title, body}" "$P/plan.json")
+                res=$(api -X POST "https://api.github.com/repos/$R/issues" -d "$body")
+                num=$(echo "$res" | jq -r .number); node=$(echo "$res" | jq -r .node_id)
+                [ "$num" != null ] || { echo "create failed: $(echo "$res" | jq -r .message)" >> "$O/result.txt"; continue; }
+                item=$(additem "$node"); st=$(jq -r ".[$i].status" "$P/plan.json")
+                echo "created #$num item $item status $st: $(setstatus "$item" "$st")" >> "$O/result.txt"; done=$((done+1))
+              elif [ "$op" = comment ]; then
+                num=$(jq -r ".[$i].issue" "$P/plan.json"); body=$(jq -c ".[$i] | {body}" "$P/plan.json")
+                api -X POST "https://api.github.com/repos/$R/issues/$num/comments" -d "$body" | jq -r '"comment #'"$num"': \(.id // .message)"' >> "$O/result.txt"; done=$((done+1))
+              elif [ "$op" = status ]; then
+                num=$(jq -r ".[$i].issue" "$P/plan.json"); st=$(jq -r ".[$i].status" "$P/plan.json")
+                node=$(api "https://api.github.com/repos/$R/issues/$num" | jq -r .node_id); item=$(additem "$node")
+                echo "status #$num -> $st: $(setstatus "$item" "$st")" >> "$O/result.txt"; done=$((done+1))
+              fi
+            done
+            echo "plan applied: $done of $n op(s) done (details in the private repo)"
+          fi
           ls -la "$O"
       - name: Save to the private repository
         if: always()
