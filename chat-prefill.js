@@ -10,7 +10,7 @@
   var mobile = (U.mobile || '').replace(/\D/g, '');
   if (mobile.length === 10) mobile = '+91 ' + mobile.slice(0, 5) + ' ' + mobile.slice(5);
   var vals = { 'wereply-lead-name': U.name, 'wereply-lead-email': U.email || '', 'wereply-lead-mobile': mobile };
-  var startedOnce = false;
+  var startTries = 0, lastTry = 0;
   function shown(el) { return !!(el && (el.offsetWidth || el.offsetHeight)); }
   function put(el, v) {
     if (!el || !v || el.value === v) return;
@@ -43,9 +43,13 @@
       }
       return;
     }
-    // The chat's start page (no open conversation): start one once, so the chat opens straight away.
+    // The chat's start page (no open conversation): start one, so the chat opens straight away. Tapped only
+    // once the page has loaded (its buttons work from then on), again every 1.5 s while it is still shown,
+    // at most 6 times (probe 21 Nov: a tap before the page was ready did nothing).
     var start = document.getElementById('wereply-btn-new-chat');
-    if (!startedOnce && shown(start)) { startedOnce = true; start.click(); }
+    if (document.readyState === 'complete' && shown(start) && startTries < 6 && Date.now() - lastTry > 1500) {
+      startTries++; lastTry = Date.now(); start.click();
+    }
   }
   setInterval(tick, 250);
 })();
