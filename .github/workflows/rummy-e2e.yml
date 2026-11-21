@@ -111,6 +111,9 @@ jobs:
           elif [ "$SCEN" = explore2 ]; then
             # Dragon Tiger first (16 new guests to INR 35 or out), then the richest one alone at Rummy's 2-seat tables: photographs.
             WAIT_SEC=4800 RM_DT_COPIES=24 RM_DT_AT=2 RM_DT_TARGET=35 EXPLORE=2 RM_MAIN=@1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
+          elif [ "$SCEN" = chatui ]; then
+            # Nexora AI Chat: Home and the chat with a signed-in test user (debug build; test_rummy.sh CHAT_UI).
+            CHAT_UI=1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           elif [ "$SCEN" = verify ]; then
             VERIFY_ONLY=1 bash x/scripts/test_rummy.sh localhost:6001 $I/space.apk $I/rummyhome.apk $I/app.apk "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           elif [ "$SCEN" = screen ]; then
