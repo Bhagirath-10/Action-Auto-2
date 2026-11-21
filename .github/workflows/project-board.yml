@@ -1,0 +1,79 @@
+name: Project board (read and update through the private tokens)
+
+# Reads (and, when asked, updates) the GitHub Project boards of the project's owners with the token
+# secrets (PRIVATE_REPO_TOKEN, MULTISPACE_REPO_TOKEN, NEXORA_REPO_TOKEN). The board's contents are saved
+# to the private repository only (4BornGithub/4B-Multi-Space, branch claude/gracious-pasteur-xvuoe4-board);
+# this public log shows only which token can see which board, never items.
+# project-board.txt: first line "<mode>" (probe | items <owner> <number> | add <owner> <number> <repo> <issue> |
+#   comment <repo> <issue> | issue <repo>); the rest of the file is used by the mode (title/body lines).
+
+on:
+  push:
+    branches: [claude/gracious-pasteur-xvuoe4]
+    paths:
+      - project-board.txt
+      - .github/workflows/project-board.yml
+
+permissions:
+  contents: read
+
+jobs:
+  board:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Board
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
+        run: |
+          set -uo pipefail
+          O="$RUNNER_TEMP/out"; mkdir -p "$O"
+          read -r MODE A1 A2 A3 A4 _ < project-board.txt || true
+          gql() { curl -sS -m 30 -H "Authorization: bearer $1" -H "Content-Type: application/json" https://api.github.com/graphql -d "$2"; }
+          OWNERS="Bhagirath-10 4BornGithub Bhautik-4B"
+          for n in PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN NEXORA_REPO_TOKEN; do
+            v="${!n}"; [ -n "$v" ] || { echo "$n: not set"; continue; }
+            who=$(gql "$v" '{"query":"{ viewer { login } }"}' | jq -r '.data.viewer.login // "?"')
+            echo "$n: works as a GitHub account: $([ "$who" != "?" ] && echo yes || echo no)"
+            scopes=$(curl -sSI -m 20 -H "Authorization: token $v" https://api.github.com/user | grep -i '^x-oauth-scopes:' | cut -d: -f2- | tr -d '\r')
+            echo "$n: classic scopes include project: $(echo "$scopes" | grep -qw project && echo yes || echo 'no/unknown')"
+            for o in $OWNERS; do
+              for kind in user organization; do
+                q=$(jq -nc --arg o "$o" --arg k "$kind" '{query:("{ " + $k + "(login: \"" + $o + "\") { projectsV2(first: 20) { nodes { number title url closed } } } }")}')
+                r=$(gql "$v" "$q")
+                cnt=$(echo "$r" | jq -r "(.data.$kind.projectsV2.nodes // []) | length" 2>/dev/null || echo 0)
+                if [ "${cnt:-0}" -gt 0 ]; then
+                  echo "$n: $kind $o: $cnt board(s) visible"
+                  echo "$r" | jq ".data.$kind.projectsV2.nodes" > "$O/projects-$n-$o.json"
+                fi
+              done
+            done
+          done
+          if [ "$MODE" = items ]; then
+            for n in PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN NEXORA_REPO_TOKEN; do
+              v="${!n}"; [ -n "$v" ] || continue
+              for kind in user organization; do
+                q=$(jq -nc --arg o "$A1" --argjson num "$A2" --arg k "$kind" '{query:("{ " + $k + "(login: \"" + $o + "\") { projectV2(number: " + ($num|tostring) + ") { title fields(first:30){ nodes { ... on ProjectV2FieldCommon { name } ... on ProjectV2SingleSelectField { name options { name } } } } items(first: 100) { nodes { id type fieldValues(first: 20) { nodes { ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } } ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } } } } content { ... on Issue { number title state url repository { nameWithOwner } body } ... on PullRequest { number title state url } ... on DraftIssue { title body } } } } } } }")}')
+                r=$(gql "$v" "$q")
+                if echo "$r" | jq -e ".data.$kind.projectV2.title" >/dev/null 2>&1; then
+                  echo "$r" > "$O/items-$A1-$A2.json"; echo "items of board $A2 read with $n ($(echo "$r" | jq ".data.$kind.projectV2.items.nodes | length") items)"; break 2
+                fi
+              done
+            done
+          fi
+          ls -la "$O"
+      - name: Save to the private repository
+        if: always()
+        env:
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+        run: |
+          T="$MULTISPACE_REPO_TOKEN"; B=claude/gracious-pasteur-xvuoe4-board
+          D="$RUNNER_TEMP/res"; git clone -q --depth 1 --branch "$B" "https://x-access-token:$T@github.com/4BornGithub/4B-Multi-Space.git" "$D" 2>/dev/null || { git init -q "$D"; git -C "$D" checkout -q -b "$B"; git -C "$D" remote add origin "https://x-access-token:$T@github.com/4BornGithub/4B-Multi-Space.git"; }
+          R="board-${GITHUB_RUN_ID}"; mkdir -p "$D/$R"; cp -r "$RUNNER_TEMP/out/." "$D/$R/" 2>/dev/null || true
+          cd "$D" && git add -A && git -c user.name=board -c user.email=ci@localhost commit -q -m "Board $GITHUB_RUN_ID" && git push -q origin "HEAD:$B" 2>&1 | grep -v -i "token\|x-access" || true
+          echo "Saved: $B/$R"
