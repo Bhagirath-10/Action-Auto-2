@@ -1,0 +1,68 @@
+name: Apps release (public APKs for the app's forced updates)
+
+# Puts the production APKs on a public release of this repository, so phones download them from GitHub
+# (the admin panel's App update card holds the links; the game server decides who must update).
+# Starts when apps-release.txt changes. Its lines:
+#   tag <release tag>                       e.g. tag app-v2.1.14
+#   title <release title>
+#   file <repo> <branch> <file> [<name>]    a file of a branch of a private repository (the APK), published as <name>
+# Secrets (only their names are printed): PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN / NEXORA_REPO_TOKEN read the
+# private repositories; the release is made with this workflow's own token.
+
+on:
+  push:
+    branches: [claude/gracious-pasteur-xvuoe4]
+    paths:
+      - apps-release.txt
+      - .github/workflows/apps-release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Files from the private repositories
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          O="$RUNNER_TEMP/files"; mkdir -p "$O"
+          grep -E '^file ' apps-release.txt | while read -r _ repo branch file name; do
+            echo "$repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || { echo "::error::bad repo"; exit 1; }
+            echo "$branch" | grep -Eq '^[A-Za-z0-9._/-]{1,120}$' || { echo "::error::bad branch"; exit 1; }
+            echo "$file" | grep -Eq '^[A-Za-z0-9._-]{1,120}$' || { echo "::error::bad file"; exit 1; }
+            name="${name:-$file}"; echo "$name" | grep -Eq '^[A-Za-z0-9._-]{1,120}$' || { echo "::error::bad name"; exit 1; }
+            got=""
+            for n in PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN NEXORA_REPO_TOKEN; do
+              v="${!n}"; [ -n "$v" ] || continue
+              D="$RUNNER_TEMP/r-$RANDOM"
+              if git clone -q --depth 1 --branch "$branch" "https://x-access-token:$v@github.com/$repo.git" "$D" 2>/dev/null; then
+                cp "$D/$file" "$O/$name"; got="$n"; rm -rf "$D"; break
+              fi
+            done
+            [ -n "$got" ] || { echo "::error::no token reads $repo $branch"; exit 1; }
+            echo "$name: $(stat -c %s "$O/$name") bytes, sha256 $(sha256sum "$O/$name" | cut -c1-64) (read with $got)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="$(sed -n 's/^tag //p' apps-release.txt | head -1)"; TITLE="$(sed -n 's/^title //p' apps-release.txt | head -1)"
+          echo "$TAG" | grep -Eq '^[A-Za-z0-9._-]{1,60}$' || { echo "::error::bad tag"; exit 1; }
+          O="$RUNNER_TEMP/files"
+          (cd "$O" && sha256sum * > SHA256SUMS.txt)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$O"/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$O"/* --repo "$GITHUB_REPOSITORY" --title "${TITLE:-$TAG}" --notes "Production APKs. Install over the app you have: your account and settings stay." --target "$GITHUB_SHA"
+          fi
+          for f in "$O"/*; do echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$f")" | tee -a "$GITHUB_STEP_SUMMARY"; done
