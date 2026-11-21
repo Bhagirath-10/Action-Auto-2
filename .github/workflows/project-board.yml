@@ -106,6 +106,21 @@ jobs:
               elif [ "$op" = comment ]; then
                 num=$(jq -r ".[$i].issue" "$P/plan.json"); body=$(jq -c ".[$i] | {body}" "$P/plan.json")
                 api -X POST "https://api.github.com/repos/$R/issues/$num/comments" -d "$body" | jq -r '"comment #'"$num"': \(.id // .message)"' >> "$O/result.txt"; done=$((done+1))
+              elif [ "$op" = move ]; then
+                # Every card in status `from` -> `to` (all pages of the board), except the issues in `exclude`.
+                from=$(jq -r ".[$i].from" "$P/plan.json"); to=$(jq -r ".[$i].to" "$P/plan.json"); excl=$(jq -c ".[$i].exclude // []" "$P/plan.json")
+                after=null; moved=0
+                while :; do
+                  q=$(jq -nc --arg p "$PID" --argjson a "$after" '{query:"query($p:ID!,$a:String){ node(id:$p){ ... on ProjectV2 { items(first:100, after:$a){ pageInfo{ hasNextPage endCursor } nodes{ id fieldValueByName(name:\"Status\"){ ... on ProjectV2ItemFieldSingleSelectValue{ name } } content{ ... on Issue{ number } } } } } } }",variables:{p:$p,a:$a}}')
+                  page=$(gql "$T" "$q")
+                  for row in $(echo "$page" | jq -r --arg f "$from" --argjson x "$excl" '.data.node.items.nodes[] | select(.fieldValueByName.name == $f) | select((.content.number // -1) as $n | ($x | index($n)) | not) | "\(.id),\(.content.number // "draft")"'); do
+                    id=${row%%,*}; num=${row#*,}
+                    echo "move #$num $from -> $to: $(setstatus "$id" "$to")" >> "$O/result.txt"; moved=$((moved+1))
+                  done
+                  [ "$(echo "$page" | jq -r '.data.node.items.pageInfo.hasNextPage')" = true ] || break
+                  after=$(echo "$page" | jq -c '.data.node.items.pageInfo.endCursor')
+                done
+                echo "moved $moved card(s)" >> "$O/result.txt"; done=$((done+1))
               elif [ "$op" = status ]; then
                 num=$(jq -r ".[$i].issue" "$P/plan.json"); st=$(jq -r ".[$i].status" "$P/plan.json")
                 node=$(api "https://api.github.com/repos/$R/issues/$num" | jq -r .node_id); item=$(additem "$node")
