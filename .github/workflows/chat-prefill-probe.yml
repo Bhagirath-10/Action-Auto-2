@@ -1,0 +1,97 @@
+name: Chat pre-fill probe (Nexora AI Chat, WeReplyX)
+
+# The Nexora AI app's chat screen fills the chat's form with the signed-in user's details (chat-prefill.js, the
+# same file as the app's assets/chat_prefill.js) and sends it once. This opens the widget in a phone-sized
+# Chromium page as the app does, adds the same script to every frame (as the app's WebView does for the chat's
+# site), with a test user, and checks that the chat opens without typing; then asks one question.
+# Screenshots go to the private repository. Secret: MULTISPACE_REPO_TOKEN or PRIVATE_REPO_TOKEN.
+
+on:
+  push:
+    branches: [claude/gracious-pasteur-xvuoe4]
+    paths:
+      - chat-prefill.js
+      - .github/workflows/chat-prefill-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Probe
+        run: |
+          read -r BOT DOMAIN _ < chat-widget.txt; DOMAIN="${DOMAIN:-example.com}"; echo "$DOMAIN" | grep -Eq '^[a-z0-9.-]{3,60}$' || exit 1
+          echo "$BOT" | grep -Eq '^[A-Za-z0-9]{3,20}$' || { echo "::error::bad bot id"; exit 1; }
+          O="$RUNNER_TEMP/out"; mkdir -p "$O"; cp chat-prefill.js "$RUNNER_TEMP/"
+          mkdir -p "$RUNNER_TEMP/p" && cd "$RUNNER_TEMP/p"
+          npm init -y >/dev/null && npm i -s playwright@1.48.2 >/dev/null 2>&1 && npx playwright install --with-deps chromium >/dev/null 2>&1
+          cat > app.html <<HTML
+          <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+          <style>html,body{margin:0;height:100%;background:#FFFFFF}.wereply-launcher{opacity:0!important}</style></head><body>
+          <script src="https://apis.wereplyx.com/widget.js" data-bot-id="$BOT" data-primary-color="#0D221B" data-secondary-color="#FFFFFF" data-user-bubble-color="#B8D547" data-bot-bubble-color="#EEF5D2" defer></script>
+          <script>
+          (function(){var said=false;function tick(){var c=document.getElementById('wereply-widget-container'),b=document.querySelector('.wereply-launcher');var open=c&&c.style.display!=='none';if(b&&!open){b.click();}if(open&&!said){said=true;console.log('[nexora] chat open');}}setInterval(tick,400);})();
+          </script></body></html>
+          HTML
+          cat > probe.js <<'JS'
+          const { chromium, devices } = require('playwright');
+          const fs = require('fs'); const O = process.env.O; const D = process.env.DOMAIN;
+          const log = []; const L = (s) => { log.push(s); console.log(s.slice(0, 200)); };
+          const user = { name: 'Nexora Test', email: 'nexora.test@example.com', mobile: '9825033445' };
+          const js = fs.readFileSync(process.env.PREFILL, 'utf8').replace('__NEXORA_USER__', JSON.stringify(user));
+          async function chatFrame(p) { for (let i = 0; i < 40; i++) { const f = p.frames().find(f => f.url().includes('/bot/')); if (f) return f; await p.waitForTimeout(500); } return null; }
+          async function text(f) { try { return (await f.evaluate(() => document.body.innerText)).replace(/\n{2,}/g, '\n'); } catch (e) { return 'ERR ' + e; } }
+          (async () => {
+            const b = await chromium.launch();
+            const ctx = await b.newContext({ ...devices['Pixel 7'] });
+            await ctx.addInitScript(js);
+            const p = await ctx.newPage();
+            p.on('console', m => L('console: ' + m.text().slice(0, 200)));
+            await p.route(`https://${D}/app-chat`, r => r.fulfill({ contentType: 'text/html', body: fs.readFileSync('app.html', 'utf8') }));
+            await p.goto(`https://${D}/app-chat`);
+            const f = await chatFrame(p); if (!f) { L('RESULT FAIL no chat frame'); fs.writeFileSync(`${O}/conversation.txt`, log.join('\n')); process.exit(0); }
+            for (const t of [1500, 3000, 6000]) { await p.waitForTimeout(t); await p.screenshot({ path: `${O}/prefill_${t}.png` }); }
+            const vals = await f.evaluate(() => ['wereply-lead-name', 'wereply-lead-email', 'wereply-lead-mobile'].map(id => { const e = document.getElementById(id); return e ? id + '=' + e.value + (e.offsetWidth ? '' : ' (hidden)') : id + ' missing'; }));
+            L('FORM FIELDS: ' + vals.join(' | '));
+            const err = await f.evaluate(() => { const e = document.querySelector('#wereply-lead-error, .wereply-lead-error'); return e && !e.hidden ? e.textContent : ''; });
+            L('FORM ERROR: ' + (err || 'none'));
+            const after = await text(f); L('AFTER LOAD:\n' + after);
+            const box = f.locator('textarea:visible').last();
+            const inChat = await box.count() > 0;
+            L('RESULT ' + (inChat ? 'PASS chat open without typing' : 'FAIL still not in the chat'));
+            if (inChat) {
+              const q = 'Hello, what can you do?'; const before = await text(f);
+              await box.click(); await box.fill(q); await p.keyboard.press('Enter'); L('ASKED: ' + q);
+              let a = before; for (let i = 0; i < 40; i++) { await p.waitForTimeout(1000); a = await text(f); if (a.length > before.length + q.length + 20) { await p.waitForTimeout(3000); a = await text(f); break; } }
+              L('REPLY:\n' + a.slice(Math.max(0, before.length - 20)));
+              await p.screenshot({ path: `${O}/prefill_reply.png` });
+            }
+            // A second open (the app's screen opened again): the chat resumes or starts again without typing.
+            const p2 = await ctx.newPage();
+            await p2.route(`https://${D}/app-chat`, r => r.fulfill({ contentType: 'text/html', body: fs.readFileSync('app.html', 'utf8') }));
+            await p2.goto(`https://${D}/app-chat`); await p2.waitForTimeout(8000);
+            await p2.screenshot({ path: `${O}/prefill_second_open.png` });
+            const f2 = await chatFrame(p2); L('SECOND OPEN:\n' + (f2 ? await text(f2) : 'no frame'));
+            fs.writeFileSync(`${O}/conversation.txt`, log.join('\n')); await b.close();
+          })();
+          JS
+          O="$O" DOMAIN="$DOMAIN" PREFILL="$RUNNER_TEMP/chat-prefill.js" node probe.js || echo "probe failed"
+          grep "RESULT\|FORM" "$O/conversation.txt" || true
+          ls -la "$O"
+      - name: Save to the private repository
+        if: always()
+        env:
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          T="${MULTISPACE_REPO_TOKEN:-$PRIVATE_REPO_TOKEN}"; B=claude/gracious-pasteur-xvuoe4-e2e-results
+          D="$RUNNER_TEMP/res"; git clone -q --depth 1 --branch "$B" "https://x-access-token:$T@github.com/4BornGithub/4B-Multi-Space.git" "$D" 2>&1 | grep -v -i token || true
+          R="chat-prefill-${GITHUB_RUN_ID}"; mkdir -p "$D/$R"; cp -r "$RUNNER_TEMP/out/." "$D/$R/"
+          cd "$D" && git add -A && git -c user.name=chat-probe -c user.email=ci@localhost commit -q -m "Chat prefill probe $GITHUB_RUN_ID" && git push -q origin "HEAD:$B" 2>&1 | grep -v -i "token\|x-access" || true
+          echo "Saved: $B/$R" | tee -a "$GITHUB_STEP_SUMMARY"
