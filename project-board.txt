@@ -1,1 +1,1 @@
-apply 4BornGithub 31 4BornGithub/4B-Rummy-Home deploy-1146
+apply 4BornGithub 31 4BornGithub/4B-Rummy-Home check-1200
