@@ -1,1 +1,1 @@
-claude/gracious-pasteur-xvuoe4-e2e hunt 6 6 3 60
+claude/gracious-pasteur-xvuoe4-e2e-hunt hunt 6 6 3 60
