@@ -184,7 +184,9 @@ jobs:
           REF="$(sed -n 's/^files  *//p' rummy-table.txt | head -1)"
           echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          read -r _ AT MIN GAMES MAIN STAG LOSS ONE _ <<< "$(grep -E '^run ' rummy-table.txt | head -1)"
+          read -r _ AT MIN GAMES MAIN STAG LOSS ONE SCALE _ <<< "$(grep -E '^run ' rummy-table.txt | head -1)"
+          [ -z "$SCALE" ] || echo "$SCALE" | grep -Eq '^[0-9.]{1,4}$' || { echo "::error::not a scale"; exit 1; }
+          echo "RM_OCRSCALE=$SCALE" >> "$GITHUB_ENV"
           [ -z "$STAG" ] || echo "$STAG" | grep -Eq '^[0-9,]{1,40}$' || { echo "::error::not a stagger list"; exit 1; }
           [ -z "$LOSS" ] || echo "$LOSS" | grep -Eq '^[0-9.]{1,5}$' || { echo "::error::not an amount"; exit 1; }
           echo "RM_STAGGER=$STAG" >> "$GITHUB_ENV"; echo "RM_LOSSMAX=$LOSS" >> "$GITHUB_ENV"; echo "RM_ONELOOK=${ONE:-0}" >> "$GITHUB_ENV"
@@ -243,6 +245,7 @@ jobs:
             git ls-remote "https://x-access-token:$v@github.com/$APP_REPO.git" >/dev/null 2>&1 && { LU="https://x-access-token:$v@github.com/$APP_REPO.git"; break; }
           done
           live() {
+            set +e
             [ -n "$LU" ] || return 0
             D="$RUNNER_TEMP/live"; rm -rf "$D"; mkdir -p "$D/screens"
             cp "$OUT/phone1/log.txt" "$OUT/phone1/public.txt" "$D/" 2>/dev/null
@@ -250,7 +253,7 @@ jobs:
             ls -t "$OUT"/phone1/screens/*.png 2>/dev/null | head -6 | while read -r f; do convert "$f" -resize 50% -quality 60 "$D/screens/$(basename "${f%.png}").jpg" 2>/dev/null || cp "$f" "$D/screens/"; done
             (cd "$D" && git init -q && git checkout -q -b e2e/one-table-live && git add -A && git -c user.name=rummy-table -c user.email=e2e@localhost commit -q -m "live $GITHUB_RUN_ID $(date -u +%H:%M)" && git push -q -f "$LU" HEAD:e2e/one-table-live >/dev/null 2>&1) || true
           }
-          ( while sleep 180; do live; done ) & LIVE=$!
+          ( set +e; while sleep 180; do live; done ) & LIVE=$!
           WAIT_SEC=$((RM_MIN * 60)) bash x/scripts/test_table.sh localhost:6001 "$RUNNER_TEMP/space.apk" x/e2e/rummyhome.apk "$RUNNER_TEMP/app.apk" "$RUNNER_TEMP/export.4bspace" "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
           kill $LIVE 2>/dev/null; live
           { echo "### result"; echo '```'; cat "$OUT/phone1/public.txt" 2>/dev/null || echo "no result"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
