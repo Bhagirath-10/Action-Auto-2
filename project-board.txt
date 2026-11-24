@@ -1,1 +1,1 @@
-apply 4BornGithub 31 4BornGithub/4B-Rummy-Home check-1200-held
+apply 4BornGithub 31 4BornGithub/4B-Rummy-Home check-1500-24nov
