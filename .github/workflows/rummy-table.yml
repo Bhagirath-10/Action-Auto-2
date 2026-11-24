@@ -184,7 +184,10 @@ jobs:
           REF="$(sed -n 's/^files  *//p' rummy-table.txt | head -1)"
           echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          read -r _ AT MIN GAMES MAIN _ <<< "$(grep -E '^run ' rummy-table.txt | head -1)"
+          read -r _ AT MIN GAMES MAIN STAG LOSS ONE _ <<< "$(grep -E '^run ' rummy-table.txt | head -1)"
+          [ -z "$STAG" ] || echo "$STAG" | grep -Eq '^[0-9,]{1,40}$' || { echo "::error::not a stagger list"; exit 1; }
+          [ -z "$LOSS" ] || echo "$LOSS" | grep -Eq '^[0-9.]{1,5}$' || { echo "::error::not an amount"; exit 1; }
+          echo "RM_STAGGER=$STAG" >> "$GITHUB_ENV"; echo "RM_LOSSMAX=$LOSS" >> "$GITHUB_ENV"; echo "RM_ONELOOK=${ONE:-0}" >> "$GITHUB_ENV"
           for v in "$AT" "$MIN" "$GAMES"; do echo "$v" | grep -Eq '^[0-9]{1,3}$' || { echo "::error::not a number"; exit 1; }; done
           [ -z "$MAIN" ] || echo "$MAIN" | grep -Eq '^[A-Za-z0-9@]{1,20}$' || { echo "::error::not a main ID"; exit 1; }
           echo "RM_AT=$AT" >> "$GITHUB_ENV"; echo "RM_MIN=$MIN" >> "$GITHUB_ENV"; echo "RM_GAMES=$GAMES" >> "$GITHUB_ENV"; echo "RM_MAIN=${MAIN:-@1}" >> "$GITHUB_ENV"
