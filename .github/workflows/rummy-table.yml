@@ -1,0 +1,262 @@
+name: Rummy Home - all accounts at one table (Android on ARM, NEXORA Space)
+
+# The phone app's Rummy automation run for real on a test Android (Redroid on GitHub's ARM runner) with the
+# owner's own exported copies: the app is built from a branch of the private repository (the bot's logic
+# built in), NEXORA Space is built with its test hook (copies imported by command), the export is imported,
+# and Rummy is started with all the copies at a time. Screens and logs go to the private repository only;
+# this log shows PASS / FAIL / INFO lines without names, IDs or balances.
+# Starts when rummy-table.txt changes. Its lines:
+#   app <branch of the app's private repository>
+#   space <branch of NEXORA Space's private repository>
+#   files <branch of the app's private repository with the test's files (export parts, Rummy Home, script)>
+#   run <copies at a time> <minutes> <games per guest> [<main ID>]
+# Secrets (only their names are printed): PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN / NEXORA_REPO_TOKEN read
+# the private repositories; RUMMY_EXPORT_PW is the export file's password.
+# The APKs go from the build jobs to the test job as artifacts ENCRYPTED with a key made from a secret
+# (this repository is public: nothing readable is ever uploaded).
+
+on:
+  push:
+    branches: [claude/fervent-goldberg-8ezvbs]
+    paths:
+      - rummy-table.txt
+      - .github/workflows/rummy-table.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rummy-table
+  cancel-in-progress: true
+
+env:
+  APP_REPO: Bhagirath-10/Game-Auto-2
+  SPACE_REPO: 4BornGithub/4B-Multi-Space
+
+jobs:
+  app:
+    name: Build the app (logic built in)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: What to build
+        id: what
+        run: |
+          REF="$(sed -n 's/^app  *//p' rummy-table.txt | head -1)"
+          echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+      - name: Pick a token
+        id: token
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
+          REF: ${{ steps.what.outputs.ref }}
+        run: |
+          for n in PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN NEXORA_REPO_TOKEN; do
+            v="${!n}"; [ -n "$v" ] || { echo "$n: not set"; continue; }
+            if git ls-remote --exit-code "https://x-access-token:$v@github.com/$APP_REPO.git" "refs/heads/$REF" >/dev/null 2>&1; then
+              echo "Using $n"; echo "name=$n" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          echo "::error::No token secret reads the app's branch"; exit 1
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ steps.what.outputs.ref }}
+          token: ${{ secrets[steps.token.outputs.name] }}
+          path: a
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - name: Build (full flavor, no backend)
+        working-directory: a/android-app
+        env:
+          VERSION_CODE: "20115"
+          BACKEND_URL: ""
+          LOGIC_FLOOR: "0"
+        run: |
+          export VERSION_NAME="2.1.15-table${GITHUB_RUN_NUMBER}"
+          if ! gradle --no-daemon --console=plain assembleFullRelease >"$RUNNER_TEMP/build_log.txt" 2>&1; then
+            grep -E "^e: |error:|What went wrong|FAILED" -A3 "$RUNNER_TEMP/build_log.txt" | head -60
+            echo "::error::the app did not build"; exit 1
+          fi
+          cp app/build/outputs/apk/full/release/app-full-release.apk "$RUNNER_TEMP/app.apk"
+          echo "PASS app built ($(stat -c %s "$RUNNER_TEMP/app.apk") bytes, $(git -C .. rev-parse --short HEAD))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Encrypt for the test job
+        env:
+          K: ${{ secrets.PRIVATE_REPO_TOKEN }}${{ secrets.MULTISPACE_REPO_TOKEN }}${{ secrets.NEXORA_REPO_TOKEN }}
+        run: |
+          KEY="$(printf '%s' "$K" | sha256sum | cut -c1-64)" openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:KEY -in "$RUNNER_TEMP/app.apk" -out "$RUNNER_TEMP/app.apk.enc"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-enc
+          path: ${{ runner.temp }}/app.apk.enc
+          retention-days: 1
+    outputs:
+      token: ${{ steps.token.outputs.name }}
+
+  space:
+    name: Build NEXORA Space (test hook)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: What to build
+        id: what
+        run: |
+          REF="$(sed -n 's/^space  *//p' rummy-table.txt | head -1)"
+          echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+      - name: Pick a token
+        id: token
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
+          REF: ${{ steps.what.outputs.ref }}
+        run: |
+          for n in MULTISPACE_REPO_TOKEN PRIVATE_REPO_TOKEN NEXORA_REPO_TOKEN; do
+            v="${!n}"; [ -n "$v" ] || { echo "$n: not set"; continue; }
+            if git ls-remote --exit-code "https://x-access-token:$v@github.com/$SPACE_REPO.git" "refs/heads/$REF" >/dev/null 2>&1; then
+              echo "Using $n"; echo "name=$n" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          echo "::error::No token secret reads NEXORA Space's branch"; exit 1
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SPACE_REPO }}
+          ref: ${{ steps.what.outputs.ref }}
+          token: ${{ secrets[steps.token.outputs.name] }}
+          path: s
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - name: Build (release, test key, QA, test hook)
+        working-directory: s
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.13846066" >/dev/null
+          if ! gradle --no-daemon --console=plain -PversionCode=10113 -PversionName=1.1.13 -Pqa=true -Pe2e=true :app:assembleRelease >"$RUNNER_TEMP/build_log.txt" 2>&1; then
+            grep -E "^e: |error:|What went wrong|FAILED" -A3 "$RUNNER_TEMP/build_log.txt" | head -60
+            echo "::error::NEXORA Space did not build"; exit 1
+          fi
+          cp "$(ls app/build/outputs/apk/release/*universal*.apk | head -1)" "$RUNNER_TEMP/space.apk"
+          echo "PASS NEXORA Space built ($(stat -c %s "$RUNNER_TEMP/space.apk") bytes, $(git rev-parse --short HEAD))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Encrypt for the test job
+        env:
+          K: ${{ secrets.PRIVATE_REPO_TOKEN }}${{ secrets.MULTISPACE_REPO_TOKEN }}${{ secrets.NEXORA_REPO_TOKEN }}
+        run: |
+          KEY="$(printf '%s' "$K" | sha256sum | cut -c1-64)" openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:KEY -in "$RUNNER_TEMP/space.apk" -out "$RUNNER_TEMP/space.apk.enc"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: space-enc
+          path: ${{ runner.temp }}/space.apk.enc
+          retention-days: 1
+
+  test:
+    name: Rummy with the exported copies
+    needs: [app, space]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: What to test
+        id: what
+        run: |
+          REF="$(sed -n 's/^files  *//p' rummy-table.txt | head -1)"
+          echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          read -r _ AT MIN GAMES MAIN _ <<< "$(grep -E '^run ' rummy-table.txt | head -1)"
+          for v in "$AT" "$MIN" "$GAMES"; do echo "$v" | grep -Eq '^[0-9]{1,3}$' || { echo "::error::not a number"; exit 1; }; done
+          [ -z "$MAIN" ] || echo "$MAIN" | grep -Eq '^[A-Za-z0-9@]{1,20}$' || { echo "::error::not a main ID"; exit 1; }
+          echo "RM_AT=$AT" >> "$GITHUB_ENV"; echo "RM_MIN=$MIN" >> "$GITHUB_ENV"; echo "RM_GAMES=$GAMES" >> "$GITHUB_ENV"; echo "RM_MAIN=${MAIN:-@1}" >> "$GITHUB_ENV"
+      - name: The test's files (private)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ steps.what.outputs.ref }}
+          token: ${{ secrets[needs.app.outputs.token] }}
+          path: x
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/art
+      - name: Decrypt the APKs
+        env:
+          K: ${{ secrets.PRIVATE_REPO_TOKEN }}${{ secrets.MULTISPACE_REPO_TOKEN }}${{ secrets.NEXORA_REPO_TOKEN }}
+        run: |
+          cd "$RUNNER_TEMP"
+          export KEY="$(printf '%s' "$K" | sha256sum | cut -c1-64)"
+          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:KEY -in art/app-enc/app.apk.enc -out app.apk
+          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:KEY -in art/space-enc/space.apk.enc -out space.apk
+          cat "$GITHUB_WORKSPACE"/x/e2e/export.4bspace.part* > export.4bspace
+          [ "$(sha256sum export.4bspace | cut -c1-64)" = "$(cat "$GITHUB_WORKSPACE/x/e2e/export.sha256")" ] && echo "PASS the export file is whole" || { echo "::error::the export file is not whole"; exit 1; }
+      - name: Start Android (Redroid, arm64)
+        run: |
+          sudo apt-get update -qq >/dev/null
+          sudo apt-get install -y -qq adb aapt "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || sudo apt-get install -y -qq adb aapt >/dev/null
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+          sudo modprobe ashmem_linux 2>/dev/null || true
+          echo "runner: $(nproc) CPUs, $(free -g | awk '/Mem/{print $2}') GB"
+          IMG="redroid/redroid:12.0.0_64only-latest"
+          docker pull -q "$IMG" >/dev/null
+          docker run -d --name android1 --privileged --memory=13g -p 6001:5555 "$IMG" \
+            androidboot.redroid_gpu_mode=guest androidboot.use_memfd=true androidboot.redroid_width=1600 androidboot.redroid_height=720 androidboot.redroid_dpi=240 >/dev/null
+          for t in $(seq 1 84); do adb connect localhost:6001 >/dev/null 2>&1; [ "$(adb -s localhost:6001 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break; sleep 5; done
+          [ "$(adb -s localhost:6001 shell getprop sys.boot_completed | tr -d '\r')" = 1 ] || { echo "::error::Android did not boot"; exit 1; }
+          echo "PASS Android booted ($(adb -s localhost:6001 shell getprop ro.build.version.release | tr -d '\r'))"
+          mkdir -p "$RUNNER_TEMP/sdk/build-tools/0" && ln -sf "$(command -v aapt)" "$RUNNER_TEMP/sdk/build-tools/0/aapt"; echo "ANDROID_HOME=$RUNNER_TEMP/sdk" >> "$GITHUB_ENV"
+      - name: Rummy, all the copies at a time
+        env:
+          EXPORT_PW: ${{ secrets.RUMMY_EXPORT_PW }}
+        run: |
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
+          WAIT_SEC=$((RM_MIN * 60)) bash x/scripts/test_table.sh localhost:6001 "$RUNNER_TEMP/space.apk" x/e2e/rummyhome.apk "$RUNNER_TEMP/app.apk" "$RUNNER_TEMP/export.4bspace" "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
+          { echo "### result"; echo '```'; cat "$OUT/phone1/public.txt" 2>/dev/null || echo "no result"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          docker logs android1 > "$OUT/redroid1.txt" 2>&1 || true
+          echo "RC=$RC" >> "$GITHUB_ENV"
+      - name: Save the results to a private repository
+        if: always()
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
+        run: |
+          cd "$RUNNER_TEMP/out" 2>/dev/null || exit 0
+          find . -name '*.png' -size +0 | while read -r f; do (command -v convert >/dev/null && convert "$f" -resize 50% -quality 60 "${f%.png}.jpg" && rm "$f") || true; done
+          R="run-${GITHUB_RUN_ID}"; B="e2e/one-table-results"
+          for repo in "$APP_REPO" "$SPACE_REPO"; do
+            for n in PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN NEXORA_REPO_TOKEN; do
+              v="${!n}"; [ -n "$v" ] || continue
+              U="https://x-access-token:$v@github.com/$repo.git"
+              git ls-remote "$U" >/dev/null 2>&1 || continue
+              D="$RUNNER_TEMP/res-$RANDOM"
+              git clone -q --depth 1 --branch "$B" "$U" "$D" 2>/dev/null || { git init -q "$D"; git -C "$D" checkout -q -b "$B"; git -C "$D" remote add origin "$U"; }
+              mkdir -p "$D/$R"; cp -r . "$D/$R/"
+              if (cd "$D" && git add -A && git -c user.name=rummy-table -c user.email=e2e@localhost commit -q -m "Rummy one-table run $GITHUB_RUN_ID" && git push -q origin "HEAD:$B" >/dev/null 2>&1); then
+                echo "Results: $repo (read with $n), branch $B, folder $R (private)" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+              fi
+            done
+          done
+          echo "::warning::the results could not be saved to a private repository"
+      - name: Fail if a check failed
+        if: env.RC != '0'
+        run: exit 1
