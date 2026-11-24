@@ -73,7 +73,7 @@ jobs:
           T: ${{ secrets[steps.token.outputs.name] }}
           REF: ${{ steps.what.outputs.ref }}
         run: |
-          SHA="$(git ls-remote "https://x-access-token:$T@github.com/$$APP_REPO.git" "refs/heads/$REF" | cut -c1-40)"
+          SHA="$(git ls-remote "https://x-access-token:$T@github.com/$APP_REPO.git" "refs/heads/$REF" | cut -c1-40)"
           echo "$SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::the branch's commit is not read"; exit 1; }
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"; echo "commit ${SHA:0:8}"
       - name: The build kept for this commit
@@ -175,7 +175,7 @@ jobs:
           T: ${{ secrets[steps.token.outputs.name] }}
           REF: ${{ steps.what.outputs.ref }}
         run: |
-          SHA="$(git ls-remote "https://x-access-token:$T@github.com/$$SPACE_REPO.git" "refs/heads/$REF" | cut -c1-40)"
+          SHA="$(git ls-remote "https://x-access-token:$T@github.com/$SPACE_REPO.git" "refs/heads/$REF" | cut -c1-40)"
           echo "$SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::the branch's commit is not read"; exit 1; }
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"; echo "commit ${SHA:0:8}"
       - name: The build kept for this commit
