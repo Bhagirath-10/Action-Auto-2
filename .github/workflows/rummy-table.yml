@@ -287,7 +287,7 @@ jobs:
           read -r _ ACC NEW _ <<< "$(grep -E '^accounts ' rummy-table.txt | head -1)"
           case "${ACC:-space}" in space|new) ;; *) echo "::error::accounts is space or new"; exit 1;; esac
           [ -z "$NEW" ] || echo "$NEW" | grep -Eq '^[0-9]{1,2}$' || { echo "::error::not a number"; exit 1; }
-          echo "RM_ACCOUNTS=${ACC:-space}" >> "$GITHUB_ENV"; [ -z "$NEW" ] || echo "RM_NEW=$NEW" >> "$GITHUB_ENV"
+          echo "RM_ACCOUNTS=${ACC:-space}" >> "$GITHUB_ENV"; echo "RM_NEW=${NEW:-$AT}" >> "$GITHUB_ENV"
       - name: The test's files (private)
         uses: actions/checkout@v4
         with:
