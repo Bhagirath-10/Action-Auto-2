@@ -9,7 +9,8 @@ name: Rummy Home - all accounts at one table (Android on ARM, NEXORA Space)
 #   app <branch of the app's private repository>
 #   space <branch of NEXORA Space's private repository>
 #   files <branch of the app's private repository with the test's files (export parts, Rummy Home, script)>
-#   run <copies at a time> <minutes> <games per guest> [<main ID> <stagger ms> <loss cap> <one look> <read scale>]
+#   run <copies at a time> <minutes> <games per guest> [<main ID> <stagger ms> <loss cap> <one look> <read scale> <0.04 row>]
+#     (1 to 4 run lines: each is a leg, its own cloud Android with its own accounts, all at the same time)
 #   screen <width> <height> <dpi>   (optional; default 1600 720 240)
 #   accounts new <N>   (optional: no export, the app makes N new-guest copies itself)
 # Secrets (only their names are printed): PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN / NEXORA_REPO_TOKEN read
@@ -236,11 +237,31 @@ jobs:
           path: ${{ runner.temp }}/space.apk.enc
           retention-days: 1
 
+  plan:
+    name: The legs (one cloud Android a "run" line)
+    runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.p.outputs.legs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: p
+        run: |
+          N=$(grep -cE '^run ' rummy-table.txt); [ "$N" -ge 1 ] && [ "$N" -le 4 ] || { echo "::error::1 to 4 run lines"; exit 1; }
+          echo "legs=[$(seq -s, 1 "$N")]" >> "$GITHUB_OUTPUT"; echo "$N leg(s)"
+
   test:
-    name: Rummy with the exported copies
-    needs: [app, space]
+    name: Rummy leg ${{ matrix.leg }}
+    needs: [app, space, plan]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.plan.outputs.legs) }}
+    env:
+      LEG: ${{ matrix.leg }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -251,7 +272,9 @@ jobs:
           REF="$(sed -n 's/^files  *//p' rummy-table.txt | head -1)"
           echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          read -r _ AT MIN GAMES MAIN STAG LOSS ONE SCALE _ <<< "$(grep -E '^run ' rummy-table.txt | head -1)"
+          read -r _ AT MIN GAMES MAIN STAG LOSS ONE SCALE ROW _ <<< "$(grep -E '^run ' rummy-table.txt | sed -n "${LEG}p")"
+          [ -z "$ROW" ] || echo "$ROW" | grep -Eq '^[12]$' || { echo "::error::the row is 1 or 2"; exit 1; }
+          echo "RM_ROW=$ROW" >> "$GITHUB_ENV"; echo "leg $LEG: $(grep -E '^run ' rummy-table.txt | sed -n "${LEG}p")"
           [ -z "$SCALE" ] || echo "$SCALE" | grep -Eq '^[0-9.]{1,4}$' || { echo "::error::not a scale"; exit 1; }
           echo "RM_OCRSCALE=$SCALE" >> "$GITHUB_ENV"
           [ -z "$STAG" ] || echo "$STAG" | grep -Eq '^[0-9,]{1,40}$' || { echo "::error::not a stagger list"; exit 1; }
@@ -313,7 +336,7 @@ jobs:
         run: |
           OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
           # Live progress (every 3 minutes): the test's log, the runs' logs so far and the last screens, to a private
-          # branch (e2e/one-table-live, one commit, replaced each time). Nothing of it in this log.
+          # branch (e2e/one-table-live-<leg>, one commit, replaced each time). Nothing of it in this log.
           LU=""
           for n in MULTISPACE_REPO_TOKEN PRIVATE_REPO_TOKEN NEXORA_REPO_TOKEN; do
             v="${!n}"; [ -n "$v" ] || continue
@@ -326,7 +349,7 @@ jobs:
             cp "$OUT/phone1/log.txt" "$OUT/phone1/public.txt" "$D/" 2>/dev/null
             cp -r "$OUT/phone1/live" "$D/" 2>/dev/null
             ls -t "$OUT"/phone1/screens/*.png 2>/dev/null | head -6 | while read -r f; do convert "$f" -resize 50% -quality 60 "$D/screens/$(basename "${f%.png}").jpg" 2>/dev/null || cp "$f" "$D/screens/"; done
-            (cd "$D" && git init -q && git checkout -q -b e2e/one-table-live && git add -A && git -c user.name=rummy-table -c user.email=e2e@localhost commit -q -m "live $GITHUB_RUN_ID $(date -u +%H:%M)" && git push -q -f "$LU" HEAD:e2e/one-table-live >/dev/null 2>&1) || true
+            (cd "$D" && git init -q && git checkout -q -b "e2e/one-table-live-$LEG" && git add -A && git -c user.name=rummy-table -c user.email=e2e@localhost commit -q -m "live $GITHUB_RUN_ID $(date -u +%H:%M)" && git push -q -f "$LU" "HEAD:e2e/one-table-live-$LEG" >/dev/null 2>&1) || true
           }
           ( set +e; while sleep 180; do live; done ) & LIVE=$!
           WAIT_SEC=$((RM_MIN * 60)) bash x/scripts/test_table.sh localhost:6001 "$RUNNER_TEMP/space.apk" x/e2e/rummyhome.apk "$RUNNER_TEMP/app.apk" "$RUNNER_TEMP/export.4bspace" "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
@@ -343,7 +366,7 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/out" 2>/dev/null || exit 0
           find . -name '*.png' -size +0 | while read -r f; do (command -v convert >/dev/null && convert "$f" -resize 50% -quality 60 "${f%.png}.jpg" && rm "$f") || true; done
-          R="run-${GITHUB_RUN_ID}"; B="e2e/one-table-results"
+          R="run-${GITHUB_RUN_ID}/leg${LEG}"; B="e2e/one-table-results"
           for repo in "$APP_REPO" "$SPACE_REPO"; do
             for n in PRIVATE_REPO_TOKEN MULTISPACE_REPO_TOKEN NEXORA_REPO_TOKEN; do
               v="${!n}"; [ -n "$v" ] || continue
@@ -352,7 +375,14 @@ jobs:
               D="$RUNNER_TEMP/res-$RANDOM"
               git clone -q --depth 1 --branch "$B" "$U" "$D" 2>/dev/null || { git init -q "$D"; git -C "$D" checkout -q -b "$B"; git -C "$D" remote add origin "$U"; }
               mkdir -p "$D/$R"; cp -r . "$D/$R/"
-              if (cd "$D" && git add -A && git -c user.name=rummy-table -c user.email=e2e@localhost commit -q -m "Rummy one-table run $GITHUB_RUN_ID" && git push -q origin "HEAD:$B" >/dev/null 2>&1); then
+              ok=1; (cd "$D" && git add -A && git -c user.name=rummy-table -c user.email=e2e@localhost commit -q -m "Rummy one-table run $GITHUB_RUN_ID leg $LEG") || ok=0
+              # The legs push at about the same time: on a refused push, the branch is taken again and the push tried again.
+              for try in 1 2 3 4 5; do
+                [ "$ok" = 1 ] || break
+                (cd "$D" && git push -q origin "HEAD:$B" >/dev/null 2>&1) && { ok=2; break; }
+                sleep $((RANDOM % 10 + 3)); (cd "$D" && git pull -q --rebase origin "$B" >/dev/null 2>&1) || true
+              done
+              if [ "$ok" = 2 ]; then
                 echo "Results: $repo (read with $n), branch $B, folder $R (private)" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
               fi
             done
