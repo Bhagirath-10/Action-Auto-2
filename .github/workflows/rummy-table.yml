@@ -11,6 +11,7 @@ name: Rummy Home - all accounts at one table (Android on ARM, NEXORA Space)
 #   files <branch of the app's private repository with the test's files (export parts, Rummy Home, script)>
 #   run <copies at a time> <minutes> <games per guest> [<main ID> <stagger ms> <loss cap> <one look> <read scale>]
 #   screen <width> <height> <dpi>   (optional; default 1600 720 240)
+#   accounts new <N>   (optional: no export, the app makes N new-guest copies itself)
 # Secrets (only their names are printed): PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN / NEXORA_REPO_TOKEN read
 # the private repositories; RUMMY_EXPORT_PW is the export file's password.
 # The APKs go from the build jobs to the test job as artifacts ENCRYPTED with a key made from a secret
@@ -194,6 +195,11 @@ jobs:
           for v in "$AT" "$MIN" "$GAMES"; do echo "$v" | grep -Eq '^[0-9]{1,3}$' || { echo "::error::not a number"; exit 1; }; done
           [ -z "$MAIN" ] || echo "$MAIN" | grep -Eq '^[A-Za-z0-9@]{1,20}$' || { echo "::error::not a main ID"; exit 1; }
           echo "RM_AT=$AT" >> "$GITHUB_ENV"; echo "RM_MIN=$MIN" >> "$GITHUB_ENV"; echo "RM_GAMES=$GAMES" >> "$GITHUB_ENV"; echo "RM_MAIN=${MAIN:-@1}" >> "$GITHUB_ENV"
+          # "accounts new <N>": no export, the app makes N new-guest copies itself; none: the export's copies.
+          read -r _ ACC NEW _ <<< "$(grep -E '^accounts ' rummy-table.txt | head -1)"
+          case "${ACC:-space}" in space|new) ;; *) echo "::error::accounts is space or new"; exit 1;; esac
+          [ -z "$NEW" ] || echo "$NEW" | grep -Eq '^[0-9]{1,2}$' || { echo "::error::not a number"; exit 1; }
+          echo "RM_ACCOUNTS=${ACC:-space}" >> "$GITHUB_ENV"; [ -z "$NEW" ] || echo "RM_NEW=$NEW" >> "$GITHUB_ENV"
       - name: The test's files (private)
         uses: actions/checkout@v4
         with:
