@@ -9,7 +9,7 @@ name: Rummy Home - all accounts at one table (Android on ARM, NEXORA Space)
 #   app <branch of the app's private repository>
 #   space <branch of NEXORA Space's private repository>
 #   files <branch of the app's private repository with the test's files (export parts, Rummy Home, script)>
-#   run <copies at a time> <minutes> <games per guest> [<main ID> <stagger ms> <loss cap> <one look> <read scale> <0.04 row>]
+#   run <copies at a time> <minutes> <games per guest> [<main ID> <stagger ms> <loss cap> <one look> <read scale> <0.04 row> <wave wait ms>]
 #     (1 to 4 run lines: each is a leg, its own cloud Android with its own accounts, all at the same time)
 #   screen <width> <height> <dpi>   (optional; default 1600 720 240)
 #   accounts new <N>   (optional: no export, the app makes N new-guest copies itself)
@@ -272,8 +272,10 @@ jobs:
           REF="$(sed -n 's/^files  *//p' rummy-table.txt | head -1)"
           echo "$REF" | grep -Eq '^[A-Za-z0-9._/-]{1,100}$' || { echo "::error::not a valid branch"; exit 1; }
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          read -r _ AT MIN GAMES MAIN STAG LOSS ONE SCALE ROW _ <<< "$(grep -E '^run ' rummy-table.txt | sed -n "${LEG}p")"
+          read -r _ AT MIN GAMES MAIN STAG LOSS ONE SCALE ROW WW _ <<< "$(grep -E '^run ' rummy-table.txt | sed -n "${LEG}p")"
           [ -z "$ROW" ] || echo "$ROW" | grep -Eq '^[12]$' || { echo "::error::the row is 1 or 2"; exit 1; }
+          [ -z "$WW" ] || echo "$WW" | grep -Eq '^[0-9]{1,6}$' || { echo "::error::the wave's wait is ms"; exit 1; }
+          echo "RM_WAVEWAIT=$WW" >> "$GITHUB_ENV"
           echo "RM_ROW=$ROW" >> "$GITHUB_ENV"; echo "leg $LEG: $(grep -E '^run ' rummy-table.txt | sed -n "${LEG}p")"
           [ -z "$SCALE" ] || echo "$SCALE" | grep -Eq '^[0-9.]{1,4}$' || { echo "::error::not a scale"; exit 1; }
           echo "RM_OCRSCALE=$SCALE" >> "$GITHUB_ENV"
