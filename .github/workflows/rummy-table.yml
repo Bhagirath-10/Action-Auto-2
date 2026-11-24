@@ -98,6 +98,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.14.3"
+          # This workflow runs on a branch that is not the default one: Gradle's cache is written here too, so a
+          # build after a small change of the logic does not start cold.
+          cache-read-only: false
       - name: Build (full flavor, no backend)
         if: steps.kept.outputs.cache-hit != 'true'
         working-directory: a/android-app
@@ -197,6 +200,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.14.3"
+          # This workflow runs on a branch that is not the default one: Gradle's cache is written here too, so a
+          # build after a small change of the logic does not start cold.
+          cache-read-only: false
       - name: Build (release, test key, QA, test hook)
         if: steps.kept.outputs.cache-hit != 'true'
         working-directory: s
