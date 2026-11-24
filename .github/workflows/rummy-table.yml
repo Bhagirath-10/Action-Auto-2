@@ -9,7 +9,8 @@ name: Rummy Home - all accounts at one table (Android on ARM, NEXORA Space)
 #   app <branch of the app's private repository>
 #   space <branch of NEXORA Space's private repository>
 #   files <branch of the app's private repository with the test's files (export parts, Rummy Home, script)>
-#   run <copies at a time> <minutes> <games per guest> [<main ID>]
+#   run <copies at a time> <minutes> <games per guest> [<main ID> <stagger ms> <loss cap> <one look> <read scale>]
+#   screen <width> <height> <dpi>   (optional; default 1600 720 240)
 # Secrets (only their names are printed): PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN / NEXORA_REPO_TOKEN read
 # the private repositories; RUMMY_EXPORT_PW is the export file's password.
 # The APKs go from the build jobs to the test job as artifacts ENCRYPTED with a key made from a secret
@@ -221,10 +222,13 @@ jobs:
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
           sudo modprobe ashmem_linux 2>/dev/null || true
           echo "runner: $(nproc) CPUs, $(free -g | awk '/Mem/{print $2}') GB"
+          # The screen: "screen W H DPI" in rummy-table.txt (default 1600 720 240; the app's taps scale from 1600x720).
+          read -r _ SW SH SD _ <<< "$(grep -E '^screen ' rummy-table.txt | head -1)"
+          SW="${SW:-1600}"; SH="${SH:-720}"; SD="${SD:-240}"; echo "screen ${SW}x${SH} at ${SD} dpi"
           IMG="redroid/redroid:12.0.0_64only-latest"
           docker pull -q "$IMG" >/dev/null
           docker run -d --name android1 --privileged --memory=13g -p 6001:5555 "$IMG" \
-            androidboot.redroid_gpu_mode=guest androidboot.use_memfd=true androidboot.redroid_width=1600 androidboot.redroid_height=720 androidboot.redroid_dpi=240 androidboot.redroid_fps=15 >/dev/null
+            androidboot.redroid_gpu_mode=guest androidboot.use_memfd=true androidboot.redroid_width=$SW androidboot.redroid_height=$SH androidboot.redroid_dpi=$SD androidboot.redroid_fps=15 >/dev/null
           for t in $(seq 1 84); do adb connect localhost:6001 >/dev/null 2>&1; [ "$(adb -s localhost:6001 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break; sleep 5; done
           [ "$(adb -s localhost:6001 shell getprop sys.boot_completed | tr -d '\r')" = 1 ] || { echo "::error::Android did not boot"; exit 1; }
           echo "PASS Android booted ($(adb -s localhost:6001 shell getprop ro.build.version.release | tr -d '\r'))"
