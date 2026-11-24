@@ -222,7 +222,7 @@ jobs:
           IMG="redroid/redroid:12.0.0_64only-latest"
           docker pull -q "$IMG" >/dev/null
           docker run -d --name android1 --privileged --memory=13g -p 6001:5555 "$IMG" \
-            androidboot.redroid_gpu_mode=guest androidboot.use_memfd=true androidboot.redroid_width=1600 androidboot.redroid_height=720 androidboot.redroid_dpi=240 >/dev/null
+            androidboot.redroid_gpu_mode=guest androidboot.use_memfd=true androidboot.redroid_width=1600 androidboot.redroid_height=720 androidboot.redroid_dpi=240 androidboot.redroid_fps=15 >/dev/null
           for t in $(seq 1 84); do adb connect localhost:6001 >/dev/null 2>&1; [ "$(adb -s localhost:6001 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break; sleep 5; done
           [ "$(adb -s localhost:6001 shell getprop sys.boot_completed | tr -d '\r')" = 1 ] || { echo "::error::Android did not boot"; exit 1; }
           echo "PASS Android booted ($(adb -s localhost:6001 shell getprop ro.build.version.release | tr -d '\r'))"
@@ -230,9 +230,29 @@ jobs:
       - name: Rummy, all the copies at a time
         env:
           EXPORT_PW: ${{ secrets.RUMMY_EXPORT_PW }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          MULTISPACE_REPO_TOKEN: ${{ secrets.MULTISPACE_REPO_TOKEN }}
+          NEXORA_REPO_TOKEN: ${{ secrets.NEXORA_REPO_TOKEN }}
         run: |
           OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
+          # Live progress (every 3 minutes): the test's log, the runs' logs so far and the last screens, to a private
+          # branch (e2e/one-table-live, one commit, replaced each time). Nothing of it in this log.
+          LU=""
+          for n in MULTISPACE_REPO_TOKEN PRIVATE_REPO_TOKEN NEXORA_REPO_TOKEN; do
+            v="${!n}"; [ -n "$v" ] || continue
+            git ls-remote "https://x-access-token:$v@github.com/$APP_REPO.git" >/dev/null 2>&1 && { LU="https://x-access-token:$v@github.com/$APP_REPO.git"; break; }
+          done
+          live() {
+            [ -n "$LU" ] || return 0
+            D="$RUNNER_TEMP/live"; rm -rf "$D"; mkdir -p "$D/screens"
+            cp "$OUT/phone1/log.txt" "$OUT/phone1/public.txt" "$D/" 2>/dev/null
+            cp -r "$OUT/phone1/live" "$D/" 2>/dev/null
+            ls -t "$OUT"/phone1/screens/*.png 2>/dev/null | head -6 | while read -r f; do convert "$f" -resize 50% -quality 60 "$D/screens/$(basename "${f%.png}").jpg" 2>/dev/null || cp "$f" "$D/screens/"; done
+            (cd "$D" && git init -q && git checkout -q -b e2e/one-table-live && git add -A && git -c user.name=rummy-table -c user.email=e2e@localhost commit -q -m "live $GITHUB_RUN_ID $(date -u +%H:%M)" && git push -q -f "$LU" HEAD:e2e/one-table-live >/dev/null 2>&1) || true
+          }
+          ( while sleep 180; do live; done ) & LIVE=$!
           WAIT_SEC=$((RM_MIN * 60)) bash x/scripts/test_table.sh localhost:6001 "$RUNNER_TEMP/space.apk" x/e2e/rummyhome.apk "$RUNNER_TEMP/app.apk" "$RUNNER_TEMP/export.4bspace" "$OUT/phone1" > "$OUT/console1.txt" 2>&1; RC=$?
+          kill $LIVE 2>/dev/null; live
           { echo "### result"; echo '```'; cat "$OUT/phone1/public.txt" 2>/dev/null || echo "no result"; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
           docker logs android1 > "$OUT/redroid1.txt" 2>&1 || true
           echo "RC=$RC" >> "$GITHUB_ENV"
