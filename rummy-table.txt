@@ -4,3 +4,4 @@ files e2e/one-table
 run 6 30 3 @1 1200 1.6 1 0.75
 screen 1280 576 192
 
+# run 10: staggered wave keeps one moment
