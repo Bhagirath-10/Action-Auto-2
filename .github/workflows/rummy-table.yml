@@ -14,7 +14,7 @@ name: Rummy Home - all accounts at one table (Android on ARM, NEXORA Space)
 #   screen <width> <height> <dpi>   (optional; default 1600 720 240)
 #   accounts new <N>   (optional: no export, the app makes N new-guest copies itself)
 #   survey   (optional: photograph the table lists only)
-#   tab best2 <fee>, wavesmax <n>, only <clone,clone>   (optional: Best Of 2 at that fee, tries at most, only these copies)
+#   tab best2 <fee>, wavesmax <n>, only <clone,clone>, take <n>   (optional: Best Of 2 at that fee, tries at most, only these copies)
 # Secrets (only their names are printed): PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN / NEXORA_REPO_TOKEN read
 # the private repositories; RUMMY_EXPORT_PW is the export file's password.
 # The APKs go from the build jobs to the test job as artifacts ENCRYPTED with a key made from a secret
@@ -301,6 +301,8 @@ jobs:
           if [ -n "$WM" ]; then echo "$WM" | grep -Eq '^[0-9]{1,2}$' || { echo "::error::wavesmax <n>"; exit 1; }; echo "RM_WAVESMAX=$WM" >> "$GITHUB_ENV"; fi
           read -r _ ONLY _ <<< "$(grep -E '^only ' rummy-table.txt | head -1)"
           if [ -n "$ONLY" ]; then echo "$ONLY" | grep -Eq '^[0-9,]{1,60}$' || { echo "::error::only <clone numbers>"; exit 1; }; echo "RM_ONLY=$ONLY" >> "$GITHUB_ENV"; fi
+          read -r _ TAKE _ <<< "$(grep -E '^take ' rummy-table.txt | head -1)"
+          if [ -n "$TAKE" ]; then echo "$TAKE" | grep -Eq '^[0-9]{1,2}$' || { echo "::error::take <n>"; exit 1; }; echo "RM_TAKE=$TAKE" >> "$GITHUB_ENV"; fi
       - name: The test's files (private)
         uses: actions/checkout@v4
         with:
