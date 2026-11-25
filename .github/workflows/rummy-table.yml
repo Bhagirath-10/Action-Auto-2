@@ -16,6 +16,7 @@ name: Rummy Home - all accounts at one table (Android on ARM, NEXORA Space)
 #   survey   (optional: photograph the table lists only); fswatch   (optional: watch the copy's files)
 #   exports per-leg   (optional: leg k imports e2e/export<k>); export <k>   (every leg imports e2e/export<k>)
 #   tab best2 <fee>, wavesmax <n>, only <clone,clone>, take <n>   (optional: Best Of 2 at that fee, tries at most, only these copies)
+#   point 0.2   (optional: the Classic 0.20 tables, INR 16 to enter)
 # Secrets (only their names are printed): PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN / NEXORA_REPO_TOKEN read
 # the private repositories; RUMMY_EXPORT_PW is the export file's password.
 # The APKs go from the build jobs to the test job as artifacts ENCRYPTED with a key made from a secret
@@ -303,6 +304,9 @@ jobs:
           if [ -n "$TAB" ]; then echo "$TAB" | grep -Eq '^best2$' && echo "$FEE" | grep -Eq '^[0-9]{1,5}$' || { echo "::error::tab best2 <fee>"; exit 1; }; echo "RM_TAB=$TAB" >> "$GITHUB_ENV"; echo "RM_ENTRY=$FEE" >> "$GITHUB_ENV"; fi
           read -r _ WM _ <<< "$(grep -E '^wavesmax ' rummy-table.txt | head -1)"
           if [ -n "$WM" ]; then echo "$WM" | grep -Eq '^[0-9]{1,2}$' || { echo "::error::wavesmax <n>"; exit 1; }; echo "RM_WAVESMAX=$WM" >> "$GITHUB_ENV"; fi
+          # "point 0.2": the Classic 0.20 tables (INR 16 to enter) in place of the 0.04 ones.
+          read -r _ PT _ <<< "$(grep -E '^point ' rummy-table.txt | head -1)"
+          if [ -n "$PT" ]; then [ "$PT" = "0.2" ] || { echo "::error::point 0.2"; exit 1; }; echo "RM_POINT=$PT" >> "$GITHUB_ENV"; fi
           read -r _ ONLY _ <<< "$(grep -E '^only ' rummy-table.txt | head -1)"
           if [ -n "$ONLY" ]; then echo "$ONLY" | grep -Eq '^[0-9,]{1,60}$' || { echo "::error::only <clone numbers>"; exit 1; }; echo "RM_ONLY=$ONLY" >> "$GITHUB_ENV"; fi
           read -r _ TAKE _ <<< "$(grep -E '^take ' rummy-table.txt | head -1)"
