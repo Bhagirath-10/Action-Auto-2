@@ -15,14 +15,14 @@ on:
       mode:
         description: probe = iOS simulator image probe, curl = plain HTTP check from the runners
         type: choice
-        options: [probe, curl]
+        options: [probe, curl, fetch]
 
 permissions:
   contents: read
 
 jobs:
   curl:
-    if: inputs.mode == 'curl'
+    if: inputs.mode == 'curl' || inputs.mode == 'fetch'
     strategy:
       matrix:
         os: [macos-26, ubuntu-latest]
@@ -37,6 +37,16 @@ jobs:
             echo "CHECK $(curl -s -m 20 -o /dev/null -A "$ua" -w '%{http_code}' "$U") UA=$ua"
           done
           echo "CHECK $(curl -s -m 20 -o /dev/null -w '%{http_code}' https://pillowo.com/img/dest_goa.jpg) pillowo.com image"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ vars.FLUTTER_VERSION }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci
+          persist-credentials: false
+      - name: Plain Dart
+        run: dart run ci/probe/fetch_dart.dart
   probe:
     if: inputs.mode != 'curl'
     runs-on: macos-26
@@ -69,9 +79,11 @@ jobs:
       - name: Run probe
         working-directory: src
         run: |
-          mkdir -p integration_test && cp ../ci/probe/image_probe_test.dart integration_test/
+          mkdir -p integration_test && cp ../ci/probe/*_test.dart integration_test/
           flutter pub add 'dev:integration_test:{"sdk":"flutter"}' > /dev/null
-          flutter test integration_test/image_probe_test.dart -d "$UDID" 2>&1 | tee "$RUNNER_TEMP/probe.log" | grep -E 'PROBE|Error|error:|FAIL|passed|failed' || true
+          T=image_probe_test.dart
+          if [ "${{ inputs.mode }}" = fetch ]; then flutter pub add cupertino_http http > /dev/null; T=fetch_probe_test.dart; fi
+          flutter test integration_test/$T -d "$UDID" 2>&1 | tee "$RUNNER_TEMP/probe.log" | grep -E 'PROBE|Error|error:|FAIL|passed|failed' || true
       - name: Summary
         if: always()
         run: grep 'PROBE' "$RUNNER_TEMP/probe.log" || tail -n 60 "$RUNNER_TEMP/probe.log" || true
