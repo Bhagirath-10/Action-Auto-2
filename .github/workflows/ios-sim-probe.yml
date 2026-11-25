@@ -1,0 +1,56 @@
+name: iOS Simulator Probe
+
+# Temporary: runs an image-loading probe inside the iOS simulator (no signing, no upload).
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App
+        type: choice
+        options: [pillowo]
+      ref:
+        description: Branch / commit of the app repo
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 60
+    environment: ${{ inputs.app }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ secrets.APP_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.PRIVATE_REPO }}
+          path: src
+          persist-credentials: false
+          show-progress: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ vars.FLUTTER_VERSION }}
+      - name: Boot simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d, reverse=True) if "iOS" in k for x in d[k] if x["name"].startswith("iPhone")))')
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"; xcrun simctl bootstatus "$UDID" -b > /dev/null
+          xcrun simctl list devices booted
+          flutter --version | head -1
+      - name: Run probe
+        working-directory: src
+        run: |
+          mkdir -p integration_test && cp ../ci/probe/image_probe_test.dart integration_test/
+          flutter pub add 'dev:integration_test:{"sdk":"flutter"}' > /dev/null
+          flutter test integration_test/image_probe_test.dart -d "$UDID" 2>&1 | tee "$RUNNER_TEMP/probe.log" | grep -E 'PROBE|Error|error:|FAIL|passed|failed' || true
+      - name: Summary
+        if: always()
+        run: grep 'PROBE' "$RUNNER_TEMP/probe.log" || tail -n 60 "$RUNNER_TEMP/probe.log" || true
