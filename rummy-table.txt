@@ -1,9 +1,8 @@
 app rummy/one-table
 space e2e/import-hook
 files e2e/one-table
-run 4 20 2 @1 0 4 1 1.0 2 240000
+run 4 6 1 @1 0 4 1 1.0 2
 screen 960 432 144
 export 2
-point 0.2
-wavesmax 3
 only 63,84,103,114
+survey
