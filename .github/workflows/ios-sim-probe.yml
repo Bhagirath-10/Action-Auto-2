@@ -12,12 +12,33 @@ on:
         description: Branch / commit of the app repo
         required: false
         default: main
+      mode:
+        description: probe = iOS simulator image probe, curl = plain HTTP check from the runners
+        type: choice
+        options: [probe, curl]
 
 permissions:
   contents: read
 
 jobs:
+  curl:
+    if: inputs.mode == 'curl'
+    strategy:
+      matrix:
+        os: [macos-26, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: TBO image from this runner
+        run: |
+          U='https://www.tboholidays.com//imageresource.aspx?img=FbrGPTrju5e/HYusSxssYNGz+r+daGo8+nI8f2/HFw9QwX+47gOd8n0vhhPU+r1v22zr4Z4wuWt7ut0ptMagq1sRyuJt/Vs2zR3nIT9tti5ZOq51mve3701VR1ig3hTEggqmOmw27Q4zR9dkGjQdqgm9jFp0thxKdo3OzevNDDcXH3LBlIl7Sw=='
+          echo "runner IP country: $(curl -s -m 10 https://ipinfo.io/country)"
+          for ua in 'Dart/3.14 (dart:io)' 'okhttp/4.12.0' 'Pillowo/38 CFNetwork/3826 Darwin/25.0.0'; do
+            echo "CHECK $(curl -s -m 20 -o /dev/null -A "$ua" -w '%{http_code}' "$U") UA=$ua"
+          done
+          echo "CHECK $(curl -s -m 20 -o /dev/null -w '%{http_code}' https://pillowo.com/img/dest_goa.jpg) pillowo.com image"
   probe:
+    if: inputs.mode != 'curl'
     runs-on: macos-26
     timeout-minutes: 60
     environment: ${{ inputs.app }}
