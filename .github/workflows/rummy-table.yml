@@ -13,6 +13,7 @@ name: Rummy Home - all accounts at one table (Android on ARM, NEXORA Space)
 #     (1 to 4 run lines: each is a leg, its own cloud Android with its own accounts, all at the same time)
 #   screen <width> <height> <dpi>   (optional; default 1600 720 240)
 #   accounts new <N>   (optional: no export, the app makes N new-guest copies itself)
+#   survey   (optional: photograph the table lists only)
 # Secrets (only their names are printed): PRIVATE_REPO_TOKEN / MULTISPACE_REPO_TOKEN / NEXORA_REPO_TOKEN read
 # the private repositories; RUMMY_EXPORT_PW is the export file's password.
 # The APKs go from the build jobs to the test job as artifacts ENCRYPTED with a key made from a secret
@@ -290,6 +291,8 @@ jobs:
           case "${ACC:-space}" in space|new) ;; *) echo "::error::accounts is space or new"; exit 1;; esac
           [ -z "$NEW" ] || echo "$NEW" | grep -Eq '^[0-9]{1,2}$' || { echo "::error::not a number"; exit 1; }
           echo "RM_ACCOUNTS=${ACC:-space}" >> "$GITHUB_ENV"; echo "RM_NEW=${NEW:-$AT}" >> "$GITHUB_ENV"
+          # "survey": the account photographs Rummy Home's table lists and ends (nothing is played).
+          grep -qE '^survey' rummy-table.txt && echo "RM_SURVEY=1" >> "$GITHUB_ENV" || true
       - name: The test's files (private)
         uses: actions/checkout@v4
         with:
