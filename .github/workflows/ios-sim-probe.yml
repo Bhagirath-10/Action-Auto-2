@@ -15,7 +15,7 @@ on:
       mode:
         description: probe = iOS simulator image probe, curl = plain HTTP check from the runners
         type: choice
-        options: [probe, curl, fetch]
+        options: [probe, curl, fetch, widget]
 
 permissions:
   contents: read
@@ -83,6 +83,8 @@ jobs:
           flutter pub add 'dev:integration_test:{"sdk":"flutter"}' > /dev/null
           T=image_probe_test.dart
           if [ "${{ inputs.mode }}" = fetch ]; then flutter pub add cupertino_http http > /dev/null; T=fetch_probe_test.dart; fi
+          if [ "${{ inputs.mode }}" = widget ]; then T=widget_probe_test.dart; fi
+          rm -f $(ls integration_test/*_test.dart | grep -v "$T")
           flutter test integration_test/$T -d "$UDID" 2>&1 | tee "$RUNNER_TEMP/probe.log" | grep -E 'PROBE|Error|error:|FAIL|passed|failed' || true
       - name: Summary
         if: always()
